@@ -417,8 +417,8 @@ def omron_sync_device_to_garmin(
         L.info("Invalid date range")
         return
 
-    startdateStr = datetime.fromtimestamp(startLocal).isoformat(timespec="seconds")
-    enddateStr = datetime.fromtimestamp(endLocal).isoformat(timespec="seconds")
+    startdateStr = datetime.fromtimestamp(startLocal).date().isoformat()
+    enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
 
     L.info(f"Start synchronizing device '{ocDev.name}' from {startdateStr} to {enddateStr}")
 
@@ -983,8 +983,8 @@ def export_measurements(
         L.info("No matching devices found")
         return
 
-    startdateStr = datetime.fromtimestamp(startLocal).isoformat(timespec="seconds")
-    enddateStr = datetime.fromtimestamp(endLocal).isoformat(timespec="seconds")
+    startdateStr = datetime.fromtimestamp(startLocal).date().isoformat()
+    enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
 
     try:
         oc = omron_login(_config)
