@@ -7,7 +7,6 @@ import enum
 import hashlib
 import json
 import logging
-import logging.config
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -303,7 +302,7 @@ class OmronConnect(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def refresh_oauth2(self, refresh_token: str) -> T.Optional[str]:
+    def refresh_oauth2(self, refresh_token: str, **kwargs: T.Any) -> T.Optional[str]:
         raise NotImplementedError
 
     @abstractmethod
@@ -364,7 +363,7 @@ class OmronConnect1(OmronConnect):
 
         return None
 
-    def refresh_oauth2(self, refresh_token: str) -> T.Optional[str]:
+    def refresh_oauth2(self, refresh_token: str, **kwargs: T.Any) -> T.Optional[str]:
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -565,10 +564,10 @@ class OmronConnect2(OmronConnect):
 
         return None
 
-    def refresh_oauth2(self, refresh_token: str) -> T.Optional[str]:
+    def refresh_oauth2(self, refresh_token: str, **kwargs: T.Any) -> T.Optional[str]:
         data = {
             "app": self._APP_NAME,
-            "emailAddress": self._email,
+            "emailAddress": kwargs.get("email", self._email),
             "refreshToken": refresh_token,
         }
 

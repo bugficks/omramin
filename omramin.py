@@ -13,6 +13,7 @@ import os
 import pathlib
 import platform
 from datetime import datetime, timedelta
+from httpx import HTTPStatusError
 
 import bleak
 import click
@@ -208,15 +209,31 @@ def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
     try:
         server = ocCfg.get("server", "")
         tokendata = ocCfg.get("tokendata", "")
+        email = ocCfg.get("email", "")
         if not tokendata:
             raise FileNotFoundError
 
         oc = OC.get_omron_connect(server)
-        refreshToken = oc.refresh_oauth2(tokendata)
+        # OmronConnect2 requires email for token refresh
+        refreshToken = oc.refresh_oauth2(tokendata, email=email)
         if not refreshToken:
             raise FileNotFoundError
 
-    except FileNotFoundError:
+        # Save the new refresh token (OMRON rotates tokens on each refresh)
+        if refreshToken != tokendata:
+            ocCfg["tokendata"] = refreshToken
+            try:
+                U.json_save(_config, config)
+                L.debug("OMRON refresh token updated and saved")
+            except (OSError, IOError, ValueError) as e:
+                L.warning(f"Failed to save refreshed token: {e}")
+
+    except (HTTPStatusError, FileNotFoundError) as e:
+        if isinstance(e, HTTPStatusError):
+            L.error(f"Failed to login to OMRON connect: '{e.response.reason_phrase}: {e.response.status_code}'")
+            if e.response.status_code != 403:
+                raise
+
         L.info("Omron login")
         questions = [
             inquirer.Text(
