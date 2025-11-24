@@ -36,7 +36,7 @@ def strsimilar(a: str, b: str) -> float:
 
 
 def sum_dict_value(d: T.Dict[T.Any, T.Any], key) -> T.Any:
-    reduce(lambda a, b: a + b, map(lambda o: o[key], d))
+    return reduce(lambda a, b: a + b, map(lambda o: o[key], d))
 
 
 ########################################################################################################################
