@@ -253,7 +253,6 @@ def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
             ocCfg["server"] = server
             ocCfg["tokendata"] = tokendata
             ocCfg["country"] = country
-            ocCfg["server"] = server
 
             try:
                 U.json_save(_config, config)
@@ -985,7 +984,7 @@ def export_measurements(
 ):
     """Export device measurements to CSV or JSON format."""
 
-    config = U.json_load("config.json")
+    config = U.json_load(_config)
     devices = config.get("omron", {}).get("devices", [])
     category = OC.DeviceCategory[_category]
 
