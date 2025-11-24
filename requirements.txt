@@ -1,8 +1,8 @@
-bleak==0.22.3
-click==8.1.7
-garminconnect==0.2.25
+bleak==2.0.0
+click==8.3.1
+garminconnect==0.2.34
 httpx[http2,cli,brotli]==0.28.1
-inquirer==3.4.0
-json5==0.10.0
+inquirer==3.4.1
+json5==0.12.1
 python-dateutil==2.9.0.post0
-pytz==2025.1
+pytz==2025.2
