@@ -11,6 +11,7 @@ import logging
 import logging.config
 import os
 import pathlib
+import platform
 from datetime import datetime, timedelta
 
 import bleak
@@ -280,13 +281,26 @@ def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
             devices = await bleak.BleakScanner.discover(return_adv=True, timeout=1)
             devices = list(sorted(devices.items(), key=lambda x: x[1][1].rssi, reverse=True))
             for macAddr, (bleDev, advData) in devices:
+                devName = (bleDev.name or "").strip()
+
+                # Extract MAC address from device name on MacOS
+                if platform.system() == "Darwin" and devName.upper().startswith("BLESMART_"):
+                    try:
+                        _mac_len = 12
+                        _mac_str = devName[-_mac_len:].upper()
+                        # Validate it's actually hex before parsing
+                        if len(_mac_str) == _mac_len and all(c in "0123456789ABCDEF" for c in _mac_str):
+                            macAddr = ":".join(_mac_str[i : i + 2] for i in range(0, _mac_len, 2))
+                        else:
+                            continue
+                    except (IndexError, ValueError):
+                        continue
+
                 if macAddr in devsFound:
                     continue
 
                 if macAddr in macAddrsExistig:
                     continue
-
-                devName = bleDev.name or ""
 
                 if opts.ble_filter and not devName.upper().startswith(opts.ble_filter.upper()):
                     continue
@@ -297,6 +311,10 @@ def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
 
     try:
         asyncio.run(scan())
+
+    except bleak.exc.BleakError as e:
+        L.error(f"Bleak error: {e}")
+
     except KeyboardInterrupt:
         pass
 
