@@ -521,7 +521,7 @@ class OmronConnect2(OmronConnect):
     _APP_NAME = "OCM"
     _APP_URL = "/app"
     _APP_VERSION = "7.20.0"
-    _USER_AGENT = "Foresight/{_APP_VERSION} (com.omronhealthcare.omronconnect; build:37; iOS 15.8.3) Alamofire/5.9.1"
+    _USER_AGENT = f"Foresight/{_APP_VERSION} (com.omronhealthcare.omronconnect; build:37; iOS 15.8.3) Alamofire/5.9.1"
 
     # monkey-patch httpx so checksum(req.content) works with omron servers.
     # pylint: disable=protected-access
