@@ -35,11 +35,25 @@ __version__ = "0.2.0pre0"
 ########################################################################################################################
 
 
+@dataclasses.dataclass
 class Options:
-    def __init__(self):
-        self.write_to_garmin = True
-        self.overwrite = False
-        self.ble_filter = "BLEsmart_"
+    """Options for sync operations"""
+
+    write_to_garmin: bool = True
+    overwrite: bool = False
+    ble_filter: str = "BLEsmart_"
+
+
+@dataclasses.dataclass
+class MeasurementSyncHandler:
+    """Handler for syncing specific measurement types"""
+
+    fetch_garmin_data: T.Callable[[GC.Garmin, str, str], T.Dict[str, T.Any]]  # e.g., garmin_get_weighins
+    delete_measurement: T.Callable  # e.g., gc.delete_weigh_in
+    add_measurement: T.Callable[[datetime, T.Any, Options], None]  # e.g., add scale/BP measurement
+    measurement_type: T.Type  # OC.WeightMeasurement or OC.BPMeasurement
+    delete_key_field: str  # "samplePk" or "version"
+    log_name: str  # "weigh-in" or "blood pressure"
 
 
 ########################################################################################################################
@@ -95,7 +109,13 @@ LOGGING_CONFIG = {
             "level": logging.INFO,
             "formatter": "root",
         },
-        "omron": {
+        "omronconnect": {
+            "handlers": ["default"],
+            "level": logging.INFO,
+            "propagate": False,
+            "formatter": "root",
+        },
+        "garminconnect": {
             "handlers": ["default"],
             "level": logging.INFO,
             "formatter": "root",
@@ -103,10 +123,12 @@ LOGGING_CONFIG = {
         "httpx": {
             "handlers": ["http"],
             "level": logging.WARNING,
+            "formatter": "root",
         },
         "httpcore": {
             "handlers": ["http"],
             "level": logging.WARNING,
+            "formatter": "root",
         },
     },
 }
@@ -116,8 +138,33 @@ LOGGING_CONFIG = {
 _E = os.environ.get
 
 logging.config.dictConfig(LOGGING_CONFIG)
+
 L = logging.getLogger("")
-# L.setLevel(logging.DEBUG)
+
+# Individual env var debug enables (for targeted debugging)
+if _E("OMRAMIN_OMRON_DEBUG"):
+    logging.getLogger("omronconnect").setLevel(logging.DEBUG)
+    L.debug("OMRON debug enabled")
+
+if _E("OMRAMIN_GARMIN_DEBUG"):
+    logging.getLogger("garminconnect").setLevel(logging.DEBUG)
+    logging.getLogger("garminconnect").disabled = False
+    L.debug("Garmin debug enabled")
+
+
+def _configure_logging_levels(debug: bool = False) -> None:
+    """Configure logging levels based on debug flag.
+
+    Environment variables take precedence if already set.
+    """
+
+    if debug:
+        # Debug: everything at DEBUG level
+        logging.getLogger("").setLevel(logging.DEBUG)
+        logging.getLogger("omronconnect").setLevel(logging.DEBUG)
+        logging.getLogger("garminconnect").setLevel(logging.DEBUG)
+        logging.getLogger("garminconnect").disabled = False
+        L.debug("Debug mode enabled (all loggers at DEBUG level)")
 
 
 ########################################################################################################################
@@ -850,10 +897,31 @@ def omron_sync_device_to_garmin(
         sync_bp_measurements(gc, gcData, measurements, opts)
 
 
-def sync_scale_measurements(
-    gc: GC.Garmin, gcData: T.Dict[str, T.Any], measurements: T.List[OC.MeasurementTypes], opts: Options
-):
+def sync_measurements(
+    gc: GC.Garmin,
+    gcData: T.Dict[str, T.Any],
+    measurements: T.List[OC.MeasurementTypes],
+    handler: MeasurementSyncHandler,
+    opts: Options,
+) -> None:
+    """Generic measurement sync with deduplication.
+
+    Args:
+        gc: Garmin Connect client
+        gcData: Existing Garmin data mapped by key
+        measurements: List of measurements from OMRON
+        handler: Handler for measurement-specific operations
+        opts: Sync options
+    """
+
+    L.debug(f"Starting sync of {len(measurements)} {handler.log_name} measurements")
+    L.debug(f"Found {len(gcData)} existing {handler.log_name} records in Garmin Connect")
+
+    skipped = 0
+    added = 0
+
     for measurement in measurements:
+        # Common timestamp handling
         tz = measurement.timeZone
         ts = measurement.measurementDate / 1000
         dtUTC = U.utcfromtimestamp(ts)
@@ -863,80 +931,121 @@ def sync_scale_measurements(
         dateStr = dtLocal.date().isoformat()
         lookup = f"{dtUTC.date().isoformat()}:{dtUTC.timestamp()}"
 
+        L.debug(f"Processing measurement: local={datetimeStr}, UTC={dtUTC.isoformat()}, lookup={lookup}")
+
+        # Common deduplication logic
         if lookup in gcData.values():
             if opts.overwrite:
-                L.warning(f"  ! '{datetimeStr}': removing weigh-in")
-                for samplePk, val in gcData.items():
+                L.warning(f"  ! '{datetimeStr}': removing {handler.log_name}")
+                for key, val in gcData.items():
                     if val == lookup and opts.write_to_garmin:
-                        gc.delete_weigh_in(weight_pk=samplePk, cdate=dateStr)
+                        handler.delete_measurement(key=key, cdate=dateStr)
+
             else:
-                L.info(f"  - '{datetimeStr}' weigh-in already exists")
+                L.info(f"  - '{datetimeStr}' {handler.log_name} already exists")
+                L.debug(f"Skipping duplicate {handler.log_name} (lookup={lookup})")
+                skipped += 1
                 continue
 
-        wm = T.cast(OC.WeightMeasurement, measurement)
+        # Call handler's add function (handler knows the expected type)
+        L.debug(f"Adding new {handler.log_name} for {datetimeStr}")
+        handler.add_measurement(dtLocal, measurement, opts)  # type: ignore[arg-type]
+        added += 1
 
-        L.info(f"  + '{datetimeStr}' adding weigh-in: {wm.weight} kg ")
-        if opts.write_to_garmin:
-            gc.add_body_composition(
-                timestamp=datetimeStr,
-                weight=wm.weight,
-                percent_fat=wm.bodyFatPercentage if wm.bodyFatPercentage > 0 else None,
-                percent_hydration=None,
-                visceral_fat_mass=None,
-                bone_mass=None,
-                muscle_mass=(
-                    (wm.skeletalMusclePercentage * wm.weight) / 100 if wm.skeletalMusclePercentage > 0 else None
-                ),
-                basal_met=wm.restingMetabolism if wm.restingMetabolism > 0 else None,
-                active_met=None,
-                physique_rating=None,
-                metabolic_age=wm.metabolicAge if wm.metabolicAge > 0 else None,
-                visceral_fat_rating=wm.visceralFatLevel if wm.visceralFatLevel > 0 else None,
-                bmi=wm.bmiValue,
-            )
+    L.debug(f"Sync complete: {added} added, {skipped} skipped")
+
+
+def _add_scale_measurement(gc: GC.Garmin, dtLocal: datetime, wm: OC.WeightMeasurement, opts: Options) -> None:
+    """Add a scale measurement to Garmin Connect."""
+
+    datetimeStr = dtLocal.isoformat(timespec="seconds")
+    L.info(f"  + '{datetimeStr}' adding weigh-in: {wm.weight} kg ")
+    L.debug(
+        f"Scale measurement details: weight={wm.weight}kg, BMI={wm.bmiValue}, body_fat={wm.bodyFatPercentage}%, "
+        f"skeletal_muscle={wm.skeletalMusclePercentage}%, visceral_fat={wm.visceralFatLevel}"
+    )
+    if opts.write_to_garmin:
+        L.debug(f"Writing scale measurement to Garmin Connect at {datetimeStr}")
+        gc.add_body_composition(
+            timestamp=datetimeStr,
+            weight=wm.weight,
+            percent_fat=wm.bodyFatPercentage if wm.bodyFatPercentage > 0 else None,
+            percent_hydration=None,
+            visceral_fat_mass=None,
+            bone_mass=None,
+            muscle_mass=((wm.skeletalMusclePercentage * wm.weight) / 100 if wm.skeletalMusclePercentage > 0 else None),
+            basal_met=wm.restingMetabolism if wm.restingMetabolism > 0 else None,
+            active_met=None,
+            physique_rating=None,
+            metabolic_age=wm.metabolicAge if wm.metabolicAge > 0 else None,
+            visceral_fat_rating=wm.visceralFatLevel if wm.visceralFatLevel > 0 else None,
+            bmi=wm.bmiValue,
+        )
+        L.debug("Scale measurement written successfully")
+
+
+def _add_bp_measurement(gc: GC.Garmin, dtLocal: datetime, bpm: OC.BPMeasurement, opts: Options) -> None:
+    """Add a blood pressure measurement to Garmin Connect."""
+
+    datetimeStr = dtLocal.isoformat(timespec="seconds")
+
+    notes = bpm.notes
+    if bpm.movementDetect:
+        notes = f"{notes}, Body Movement detected"
+
+    if bpm.irregularHB:
+        notes = f"{notes}, Irregular heartbeat detected"
+
+    if not bpm.cuffWrapDetect:
+        notes = f"{notes}, Cuff wrap error"
+
+    if notes:
+        notes = notes.lstrip(", ")
+
+    L.info(f"  + '{datetimeStr}' adding blood pressure ({bpm.systolic}/{bpm.diastolic} mmHg, {bpm.pulse} bpm)")
+    L.debug(f"BP measurement details: systolic={bpm.systolic}, diastolic={bpm.diastolic}, pulse={bpm.pulse}")
+    L.debug(
+        f"BP quality flags: movement={bpm.movementDetect}, irregular_hb={bpm.irregularHB}, "
+        f"cuff_ok={bpm.cuffWrapDetect}, notes='{notes}'"
+    )
+    if opts.write_to_garmin:
+        L.debug(f"Writing BP measurement to Garmin Connect at {datetimeStr}")
+        gc.set_blood_pressure(
+            timestamp=datetimeStr, systolic=bpm.systolic, diastolic=bpm.diastolic, pulse=bpm.pulse, notes=notes
+        )
+        L.debug("BP measurement written successfully")
+
+
+def sync_scale_measurements(
+    gc: GC.Garmin, gcData: T.Dict[str, T.Any], measurements: T.List[OC.MeasurementTypes], opts: Options
+):
+    """Sync scale measurements using the generic sync_measurements function."""
+
+    handler = MeasurementSyncHandler(
+        fetch_garmin_data=garmin_get_weighins,
+        delete_measurement=lambda key, cdate: gc.delete_weigh_in(weight_pk=key, cdate=cdate),
+        add_measurement=lambda dtLocal, wm, opts: _add_scale_measurement(gc, dtLocal, wm, opts),
+        measurement_type=OC.WeightMeasurement,
+        delete_key_field="samplePk",
+        log_name="weigh-in",
+    )
+    sync_measurements(gc, gcData, measurements, handler, opts)
 
 
 def sync_bp_measurements(
     gc: GC.Garmin, gcData: T.Dict[str, T.Any], measurements: T.List[OC.MeasurementTypes], opts: Options
 ):
-    for measurement in measurements:
-        tz = measurement.timeZone
-        ts = measurement.measurementDate / 1000
-        dtUTC = U.utcfromtimestamp(ts)
-        dtLocal = datetime.fromtimestamp(ts, tz=tz)
+    """Sync blood pressure measurements using the generic sync_measurements function."""
 
-        datetimeStr = dtLocal.isoformat(timespec="seconds")
-        dateStr = dtLocal.date().isoformat()
-        lookup = f"{dtUTC.date().isoformat()}:{dtUTC.timestamp()}"
-
-        if lookup in gcData.values():
-            if opts.overwrite:
-                L.warning(f"  ! '{datetimeStr}': removing blood pressure measurement")
-                for version, val in gcData.items():
-                    if val == lookup and opts.write_to_garmin:
-                        gc.delete_blood_pressure(version=version, cdate=dateStr)
-            else:
-                L.info(f"  - '{datetimeStr}' blood pressure already exists")
-                continue
-
-        bpm = T.cast(OC.BPMeasurement, measurement)
-
-        notes = bpm.notes
-        if bpm.movementDetect:
-            notes = f"{notes}, Body Movement detected"
-        if bpm.irregularHB:
-            notes = f"{notes}, Irregular heartbeat detected"
-        if not bpm.cuffWrapDetect:
-            notes = f"{notes}, Cuff wrap error"
-        if notes:
-            notes = notes.lstrip(", ")
-
-        L.info(f"  + '{datetimeStr}' adding blood pressure ({bpm.systolic}/{bpm.diastolic} mmHg, {bpm.pulse} bpm)")
-
-        if opts.write_to_garmin:
-            gc.set_blood_pressure(
-                timestamp=datetimeStr, systolic=bpm.systolic, diastolic=bpm.diastolic, pulse=bpm.pulse, notes=notes
-            )
+    handler = MeasurementSyncHandler(
+        fetch_garmin_data=garmin_get_bp_measurements,
+        delete_measurement=lambda key, cdate: gc.delete_blood_pressure(version=key, cdate=cdate),
+        add_measurement=lambda dtLocal, bpm, opts: _add_bp_measurement(gc, dtLocal, bpm, opts),
+        measurement_type=OC.BPMeasurement,
+        delete_key_field="version",
+        log_name="blood pressure",
+    )
+    sync_measurements(gc, gcData, measurements, handler, opts)
 
 
 def garmin_get_bp_measurements(gc: GC.Garmin, startdate: str, enddate: str):
@@ -1125,20 +1234,30 @@ def _set_keyring_file_env(ctx, param, value):
     callback=_set_keyring_file_env,
     help="File path for file/encrypted backends (default: {config}.tokens.json)",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    expose_value=True,
+    help="Enable debug logging (shows detailed HTTP traffic and internal operations)",
+)
 @click.pass_context
-def cli(ctx, config_path):
+def cli(ctx, config_path, debug):
     """Sync data from 'OMRON connect' to 'Garmin Connect'
 
     Global options must be specified BEFORE the command:
-        omramin sync --days 1
+        omramin --debug sync --days 1
     """
 
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = str(config_path)
 
+    # Configure logging (unless env vars already set)
+    if not _E("OMRAMIN_DEBUG"):
+        _configure_logging_levels(debug=debug)
+
 
 ########################################################################################################################
-
 
 @cli.command(name="list")
 @click.pass_context

@@ -47,18 +47,22 @@ version = {attr = "omramin.__version__"}
 [tool.setuptools_scm]
 
 [tool.setuptools.packages.find]
-exclude = [] # exclude packages matching these glob patterns (empty by default)
+exclude = [] # exclude packages matching these glob patterns (empty by default) 
 include = [
   "omramin",
-] # package names should match these glob patterns (["*"] by default)
+] # package names should match these glob patterns (["*"] by default) 
 namespaces = false # to disable scanning PEP 420 namespaces (true by default)
-where = ["."] # list of folders that contain the packages (["."] by default)
+where = ["."] # list of folders that contain the packages (["."] by default) 
 
 [project.scripts]
 omramin = "omramin:cli"
 
 [tool.setuptools]
-py-modules = ["omramin", "omronconnect", "utils", "regionserver"]
+include-package-data = true
+py-modules = ["omramin", "omronconnect", "utils", "regionserver", "httpxlogtransport"]
+
+[tool.setuptools.package-data]
+"*" = ["region_v1.json", "region_v2.json"]
 
 # [tool.distutils.egg_info]
 # egg_base = "build"

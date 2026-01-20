@@ -16,11 +16,13 @@ import pytz
 from httpx import HTTPStatusError
 
 import utils as U
+from httpxlogtransport import HttpxLogTransport, transport_set_logger
 from regionserver import get_credentials_for_server, get_servers_for_country_code
 
 ########################################################################################################################
 
-L = logging.getLogger("omron")
+L = logging.getLogger("omronconnect")
+transport_set_logger(L)
 
 _debugSaveResponse = False
 
@@ -349,7 +351,9 @@ class OmronConnect1(OmronConnect):
         # Set _APP_URL using the selected app_id
         self._APP_URL = f"/apps/{app_id}/server-code"
 
+        # Wrap transport with LogTransport for debug logging with credential redaction
         self._client = httpx.Client(
+            transport=HttpxLogTransport(httpx.HTTPTransport()),
             headers={
                 "user-agent": OmronConnect1._USER_AGENT,
                 "X-OGSC-SDK-Version": OmronConnect1._OGSC_SDK_VERSION,
@@ -554,8 +558,10 @@ class OmronConnect2(OmronConnect):
         self._headers: T.Dict[str, str] = {}
         self._email: str = ""
 
+        # Wrap transport with LogTransport for debug logging with credential redaction (always)
         # Keep checksum event hook (required for API v2)
         self._client = httpx.Client(
+            transport=HttpxLogTransport(httpx.HTTPTransport()),
             event_hooks={"request": [_http_add_checksum]},
             headers={
                 "user-agent": OmronConnect2._USER_AGENT,
