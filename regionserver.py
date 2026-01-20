@@ -2,42 +2,63 @@
 
 import typing as T  # isort: split
 
+import sys
 from functools import cache
 from pathlib import Path
 
 import json5
 
+if sys.version_info >= (3, 9):
+    from importlib.resources import files
+
+else:
+    from importlib_resources import files
+
 ########################################################################################################################
 
-_REGION_V1_FILE = "region_v1.json"
-_REGION_V2_FILE = "region_v2.json"
+_REGION_FILE_FMT = "data/region_{ver}.json"
+
+########################################################################################################################
+
+
+def _read_region_file(filename: str) -> str:
+    """Read region JSON content from package data or local files."""
+
+    try:
+        res_name = Path(filename).name
+        res_dir = Path(filename).parent
+        package_files = files(str(res_dir))
+        return (package_files / res_name).read_text(encoding="utf-8")
+
+    except (AttributeError, FileNotFoundError, ModuleNotFoundError, TypeError):
+        module_dir = Path(__file__).parent
+        local_path = module_dir / filename
+        if not local_path.exists():
+            local_path = module_dir / filename
+
+        return local_path.read_text()
 
 
 @cache
 def _load_region_v1_data() -> T.List[T.Dict[str, T.Any]]:
     """Load API v1 region data from JSON file."""
-    # Get path to JSON file (same directory as this module)
-    module_dir = Path(__file__).parent
-    json_path = module_dir / _REGION_V1_FILE
 
-    with open(json_path, "r", encoding="utf-8") as f:
-        return json5.load(f)
+    content = _read_region_file(_REGION_FILE_FMT.format(ver="v1"))
+    return json5.loads(content)
 
 
 @cache
 def _load_region_v2_data() -> T.List[T.Dict[str, T.Any]]:
     """Load API v2 region data from JSON file."""
-    # Get path to JSON file (same directory as this module)
-    module_dir = Path(__file__).parent
-    json_path = module_dir / _REGION_V2_FILE
 
-    with open(json_path, "r", encoding="utf-8") as f:
-        return json5.load(f)
+    content = _read_region_file(_REGION_FILE_FMT.format(ver="v2"))
+    return json5.loads(content)
 
 
 @cache
 def _load_country_servers() -> T.Dict[str, T.Optional[T.List[str]]]:
     """Build country->servers mapping from v1 and v2 region data."""
+
     v1_data = _load_region_v1_data()
     v2_data = _load_region_v2_data()
     country_servers: T.Dict[str, T.Optional[T.List[str]]] = {}
@@ -99,6 +120,7 @@ def _load_country_servers() -> T.Dict[str, T.Optional[T.List[str]]]:
 @cache
 def _load_server_credentials() -> T.Dict[str, T.Tuple[str, str]]:
     """Build server->credentials mapping from API v1 region data."""
+
     region_data = _load_region_v1_data()
     server_credentials = {}
 
@@ -124,6 +146,7 @@ def get_servers_for_country_code(country_code: str) -> T.Optional[T.List[str]]:
     Returns:
         List of server URLs to try (in order), or None if country not supported
     """
+
     country_servers = _load_country_servers()
     country_code = country_code.upper()
 
@@ -140,6 +163,7 @@ def get_credentials_for_server(server_url: str) -> T.Optional[T.Tuple[str, str]]
     Returns:
         Tuple of (appID, appKey), or None if server doesn't use v1 API credentials
     """
+
     server_credentials = _load_server_credentials()
     return server_credentials.get(server_url)
 

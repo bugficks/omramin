@@ -774,10 +774,8 @@ class OmronClient:
         servers = get_servers_for_country_code(self.country)
         if not servers:
             raise ValueError(f"No servers available for country: {self.country}")
-        self.servers: T.List[str] = servers
 
         self.servers: T.List[str] = servers
-
         self._active_client: T.Optional[OmronConnect] = None
 
     def login(self, email: str, password: str) -> T.Optional[str]:

@@ -2,7 +2,6 @@
 authors = [{name = "bugficks"}]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
   "Operating System :: MacOS :: MacOS X",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -22,7 +21,8 @@ dependencies = [
 description = "Sync blood pressure and weight measurements from OMRON connect to Garmin Connect"
 dynamic = ["version"]
 keywords = ["garmin connect", "garmin", "omron", "omron connect", "sync"]
-license = {file = "LICENSE"}
+license = "GPL-2.0-or-later"
+license-files = ["LICENSE"]
 name = "omramin"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +50,7 @@ version = {attr = "omramin.__version__"}
 exclude = [] # exclude packages matching these glob patterns (empty by default) 
 include = [
   "omramin",
+  "data",
 ] # package names should match these glob patterns (["*"] by default) 
 namespaces = false # to disable scanning PEP 420 namespaces (true by default)
 where = ["."] # list of folders that contain the packages (["."] by default) 
@@ -62,7 +63,7 @@ include-package-data = true
 py-modules = ["omramin", "omronconnect", "utils", "regionserver", "httpxlogtransport"]
 
 [tool.setuptools.package-data]
-"*" = ["region_v1.json", "region_v2.json"]
+"data" = ["region_v1.json", "region_v2.json"]
 
 # [tool.distutils.egg_info]
 # egg_base = "build"
