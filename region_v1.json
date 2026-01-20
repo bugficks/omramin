@@ -1,0 +1,73 @@
+[
+  {
+    "countries": [
+      "KH",
+      "LA",
+      "LK",
+      "MN",
+      "MO",
+      "RU"
+    ]
+  },
+  {
+    "countries": [
+      "AU",
+      "BD",
+      "ID",
+      "MM",
+      "MY",
+      "NZ",
+      "PH",
+      "SG",
+      "TH",
+      "VN"
+    ],
+    "appID": "lou30y2xfa9f",
+    "appKey": "392a4bdff8af4141944d30ca8e3cc860",
+    "cloudUrl": "https://data-sg.omronconnect.com/api"
+  },
+  {
+    "countries": [
+      "HK",
+      "JP",
+      "KR",
+      "TW"
+    ],
+    "appID": "1e3ddd17",
+    "appKey": "b576cf704409ec86facdacc16fbaadad",
+    "cloudUrl": "https://data-jp.omronconnect.com/api"
+  },
+  {
+    "countries": [
+      "IN"
+    ],
+    "appID": "cuoy728n",
+    "appKey": "784uhaescyzyc28l2yh8xsth1xpga21g",
+    "cloudUrl": "https://data-in.omronconnect.com/api"
+  },
+  {
+    "countries": [
+      "AR",
+      "BO",
+      "BR",
+      "CL",
+      "CO",
+      "CR",
+      "DO",
+      "EC",
+      "GT",
+      "HN",
+      "MX",
+      "NI",
+      "PA",
+      "PE",
+      "PY",
+      "SV",
+      "UY",
+      "VE"
+    ],
+    "appID": "bfyy2kf1d5a0",
+    "appKey": "989c6dbdc0244886ac2ba4de4892080e",
+    "cloudUrl": "https://data-eu.omronconnect.com/api"
+  }
+]

@@ -7,13 +7,16 @@ import enum
 import hashlib
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import httpx
 import pytz
+from httpx import HTTPStatusError
 
 import utils as U
+from regionserver import get_credentials_for_server, get_servers_for_country_code
 
 ########################################################################################################################
 
@@ -201,8 +204,10 @@ class BPMeasurement:
     def __post_init__(self):
         for field in ["systolic", "diastolic", "pulse", "measurementDate"]:
             object.__setattr__(self, field, int(getattr(self, field)))
+
         for field in ["irregularHB", "movementDetect", "cuffWrapDetect"]:
             object.__setattr__(self, field, bool(getattr(self, field)))
+
         if not isinstance(self.timeZone, datetime.tzinfo):
             object.__setattr__(self, "timeZone", pytz.timezone(self.timeZone))
 
@@ -231,8 +236,10 @@ class WeightMeasurement:
             "metabolicAge",
         ]:
             object.__setattr__(self, field, float(getattr(self, field)))
+
         for field in ["measurementDate", "metabolicAge"]:
             object.__setattr__(self, field, int(getattr(self, field)))
+
         if not isinstance(self.timeZone, datetime.tzinfo):
             object.__setattr__(self, "timeZone", pytz.timezone(self.timeZone))
 
@@ -252,8 +259,10 @@ def ble_mac_to_serial(mac: str) -> str:
 def convert_weight_to_kg(weight: T.Union[int, float], unit: int) -> float:
     if unit == WeightUnit.G:
         return weight / 1000
+
     if unit == WeightUnit.LB:
         return weight * 0.45359237
+
     if unit == WeightUnit.ST:
         return weight * 6.35029318
 
@@ -320,35 +329,42 @@ class OmronConnect(ABC):
 
 
 class OmronConnect1(OmronConnect):
-    _APP_ID = "lou30y2xfa9f"
-    _API_KEY = "392a4bdff8af4141944d30ca8e3cc860"
     _OGSC_APP_VERSION = "010.003.00001"
     _OGSC_SDK_VERSION = "000.101"
 
-    _APP_URL = f"/api/apps/{_APP_ID}/server-code"
-
     _USER_AGENT = f"OmronConnect/{_OGSC_APP_VERSION}.001 CFNetwork/1335.0.3.4 Darwin/21.6.0)"
 
-    _client = httpx.Client(
-        headers={
-            "user-agent": _USER_AGENT,
-            "X-OGSC-SDK-Version": _OGSC_SDK_VERSION,
-            "X-OGSC-App-Version": _OGSC_APP_VERSION,
-            "X-Kii-AppID": _APP_ID,
-            "X-Kii-AppKey": _API_KEY,
-        },
-    )
-
-    def __init__(self, server: str):
+    def __init__(self, server: str, country: str):
         self._server = server
+        self._country = country
         self._headers: T.Dict[str, str] = {}
+
+        # Get AppID/AppKey from region_grouped_by_app.json based on server URL
+        credentials = get_credentials_for_server(server)
+        if not credentials:
+            raise ValueError(f"No API v1 credentials found for server: {server}")
+
+        app_id, app_key = credentials
+
+        # Set _APP_URL using the selected app_id
+        self._APP_URL = f"/apps/{app_id}/server-code"
+
+        self._client = httpx.Client(
+            headers={
+                "user-agent": OmronConnect1._USER_AGENT,
+                "X-OGSC-SDK-Version": OmronConnect1._OGSC_SDK_VERSION,
+                "X-OGSC-App-Version": OmronConnect1._OGSC_APP_VERSION,
+                "X-Kii-AppID": app_id,
+                "X-Kii-AppKey": app_key,
+            },
+        )
 
     def login(self, email: str, password: str, country: str = "") -> T.Optional[str]:
         authData = {
             "username": email,
             "password": password,
         }
-        r = self._client.post(f"{self._server}/api/oauth2/token", json=authData, headers=self._headers)
+        r = self._client.post(f"{self._server}/oauth2/token", json=authData, headers=self._headers)
         r.raise_for_status()
 
         resp = r.json()
@@ -368,7 +384,7 @@ class OmronConnect1(OmronConnect):
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         }
-        r = self._client.post(f"{self._server}/api/oauth2/token", json=data, headers=self._headers)
+        r = self._client.post(f"{self._server}/oauth2/token", json=data, headers=self._headers)
         r.raise_for_status()
 
         resp = r.json()
@@ -415,6 +431,7 @@ class OmronConnect1(OmronConnect):
         try:
             if isinstance(returnedValue, list):
                 returnedValue = returnedValue[0]
+
             if "errorCode" in returnedValue:
                 L.error(f"get_measurements() -> {returnedValue}")
                 return []
@@ -458,6 +475,7 @@ class OmronConnect1(OmronConnect):
                 measurements.extend(self._process_bpm_measurements(dev))
             elif device.category == DeviceCategory.SCALE:
                 measurements.extend(self._process_scale_measurements(dev))
+
             break
 
         return measurements
@@ -485,6 +503,7 @@ class OmronConnect1(OmronConnect):
                 cuffWrapDetect=cuffWrapGuid != 0,
             )
             measurements.append(bp)
+
         return measurements
 
     def _process_scale_measurements(self, dev: T.Dict[str, T.Any]) -> T.List[WeightMeasurement]:
@@ -495,7 +514,7 @@ class OmronConnect1(OmronConnect):
             weightUnit = bodyIndexList[ValueType.KG_FIGURE].subtype
             weight = convert_weight_to_kg(weight, weightUnit)
             bodyFatPercentage = bodyIndexList[ValueType.BODY_FAT_PER_FIGURE].value / 10
-            sceletalMusclePercentage = bodyIndexList[ValueType.RATE_SKELETAL_MUSCLE_FIGURE].value / 10
+            skeletalMusclePercentage = bodyIndexList[ValueType.RATE_SKELETAL_MUSCLE_FIGURE].value / 10
             basal_met = bodyIndexList[ValueType.BASAL_METABOLISM_FIGURE].value
             metabolic_age = bodyIndexList[ValueType.BIOLOGICAL_AGE_FIGURE].value
             visceral_fat_rating = bodyIndexList[ValueType.VISCERAL_FAT_FIGURE].value / 10
@@ -509,37 +528,41 @@ class OmronConnect1(OmronConnect):
                 bmiValue=bmi,
                 bodyFatPercentage=bodyFatPercentage,
                 restingMetabolism=basal_met,
-                skeletalMusclePercentage=sceletalMusclePercentage,
+                skeletalMusclePercentage=skeletalMusclePercentage,
                 visceralFatLevel=visceral_fat_rating,
                 metabolicAge=metabolic_age,
             )
             measurements.append(wm)
+
         return measurements
 
 
 class OmronConnect2(OmronConnect):
     _APP_NAME = "OCM"
-    _APP_URL = "/app"
-    _APP_VERSION = "7.20.0"
-    _USER_AGENT = f"Foresight/{_APP_VERSION} (com.omronhealthcare.omronconnect; build:37; iOS 15.8.3) Alamofire/5.9.1"
+    _APP_VERSION = "8.2.1"
+    _USER_AGENT = (
+        f"OMRON connect/{_APP_VERSION} (com.omronhealthcare.omronconnect; build:24; iOS 18.7.2) Alamofire/5.9.1"
+    )
 
     # monkey-patch httpx so checksum(req.content) works with omron servers.
     # pylint: disable=protected-access
     httpx._content.json_dumps = lambda obj, **kw: json.dumps(obj, **{**kw, "separators": (",", ":")})
 
-    _client = httpx.Client(
-        event_hooks={
-            "request": [_http_add_checksum],
-        },
-        headers={
-            "user-agent": _USER_AGENT,
-        },
-    )
-
-    def __init__(self, server: str):
+    def __init__(self, server: str, country: str):
         self._server = server
+        self._country = country
         self._headers: T.Dict[str, str] = {}
         self._email: str = ""
+
+        # Keep checksum event hook (required for API v2)
+        self._client = httpx.Client(
+            event_hooks={"request": [_http_add_checksum]},
+            headers={
+                "user-agent": OmronConnect2._USER_AGENT,
+            },
+        )
+        # some oi-api.ohiomron.xxx/app request require /v2
+        self._v2 = "/v2" if "/app" in server else ""
 
     def login(self, email: str, password: str, country: str) -> T.Optional[str]:
         data = {
@@ -548,7 +571,7 @@ class OmronConnect2(OmronConnect):
             "country": country,
             "app": self._APP_NAME,
         }
-        r = self._client.post(f"{self._server}{self._APP_URL}/login", json=data)
+        r = self._client.post(f"{self._server}/login", json=data)
         r.raise_for_status()
 
         resp = r.json()
@@ -557,6 +580,7 @@ class OmronConnect2(OmronConnect):
             refreshToken = resp["refreshToken"]
             self._headers["authorization"] = f"{accessToken}"
             self._email = email
+            self._country = country
             return refreshToken
 
         except KeyError:
@@ -571,7 +595,7 @@ class OmronConnect2(OmronConnect):
             "refreshToken": refresh_token,
         }
 
-        r = self._client.post(f"{self._server}{self._APP_URL}/login", json=data, headers=self._headers)
+        r = self._client.post(f"{self._server}/login", json=data, headers=self._headers)
         r.raise_for_status()
 
         resp = r.json()
@@ -587,7 +611,7 @@ class OmronConnect2(OmronConnect):
         return None
 
     def get_user(self) -> T.Dict[str, T.Any]:
-        r = self._client.get(f"{self._server}{self._APP_URL}/user?app={self._APP_NAME}", headers=self._headers)
+        r = self._client.get(f"{self._server}/user?app={self._APP_NAME}", headers=self._headers)
         r.raise_for_status()
         resp = r.json()
 
@@ -598,7 +622,7 @@ class OmronConnect2(OmronConnect):
     ) -> T.List[T.Dict[str, T.Any]]:
         _lastSyncedTime = "" if lastSyncedTime <= 0 else lastSyncedTime
         r = self._client.get(
-            f"{self._server}{self._APP_URL}/v2/sync/bp?nextpaginationKey={nextpaginationKey}"
+            f"{self._server}{self._v2}/sync/bp?nextpaginationKey={nextpaginationKey}"
             f"&lastSyncedTime={_lastSyncedTime}&phoneIdentifier={phoneIdentifier}",
             headers=self._headers,
         )
@@ -616,7 +640,7 @@ class OmronConnect2(OmronConnect):
     ) -> T.List[T.Dict[str, T.Any]]:
         _lastSyncedTime = "" if lastSyncedTime <= 0 else lastSyncedTime
         r = self._client.get(
-            f"{self._server}{self._APP_URL}/v2/sync/weight?nextpaginationKey={nextpaginationKey}"
+            f"{self._server}{self._v2}/sync/weight?nextpaginationKey={nextpaginationKey}"
             f"&lastSyncedTime={_lastSyncedTime}&phoneIdentifier={phoneIdentifier}",
             headers=self._headers,
         )
@@ -632,7 +656,6 @@ class OmronConnect2(OmronConnect):
     def get_measurements(
         self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
     ) -> T.List[MeasurementTypes]:
-
         user = int(device.user)
 
         def filter_measurements(data) -> T.List[MeasurementTypes]:
@@ -653,7 +676,6 @@ class OmronConnect2(OmronConnect):
                     continue
 
                 if device.category == DeviceCategory.BPM:
-
                     # timezone(timedelta(seconds=int(m["timeZone"])))
 
                     bpm = BPMeasurement(
@@ -675,6 +697,7 @@ class OmronConnect2(OmronConnect):
                     if weight <= 0 and weightInLbs > 0:
                         weight = weightInLbs * 0.453592
 
+                    # metabolicAge not observed in v2 API responses
                     wm = WeightMeasurement(
                         weight=weight,
                         measurementDate=measurementDate,
@@ -687,6 +710,7 @@ class OmronConnect2(OmronConnect):
                         notes=m.get("notes", ""),
                     )
                     r.append(wm)
+
             return r
 
         data = None
@@ -701,10 +725,98 @@ class OmronConnect2(OmronConnect):
 ########################################################################################################################
 
 
-def get_omron_connect(server: str) -> OmronConnect:
-    if "data-sg.omronconnect.com" in server:
-        return OmronConnect1(server)
-    return OmronConnect2(server)
+def get_omron_connect(server: str, country: str) -> OmronConnect:
+    if re.search(r"data-([a-z]{2})\.omronconnect\.com", server):
+        return OmronConnect1(server, country)
+
+    return OmronConnect2(server, country)
+
+
+def try_servers(
+    servers: T.List[str], country: str, operation: T.Callable[[OmronConnect], T.Any]
+) -> T.Tuple[OmronConnect, T.Any]:
+    for server in servers:
+        try:
+            oc = get_omron_connect(server, country)
+            result = operation(oc)
+            return oc, result
+        except (httpx.ConnectError, httpx.TimeoutException, HTTPStatusError):
+            continue
+
+    raise Exception("All servers failed")
+
+
+class OmronClient:
+    """
+    Simplified OmronConnect client with country-based initialization.
+
+    Handles server lookup and fallback internally. Delegates to OmronConnect1/2
+    instances based on regional server compatibility.
+    """
+
+    def __init__(self, country: str):
+        """
+        Initialize client for a specific country.
+
+        Args:
+            country: ISO country code (e.g. 'US', 'JP', 'DE')
+
+        Raises:
+            ValueError: No servers available for country
+        """
+        self.country = country.upper()
+        servers = get_servers_for_country_code(self.country)
+        if not servers:
+            raise ValueError(f"No servers available for country: {self.country}")
+        self.servers: T.List[str] = servers
+
+        self.servers: T.List[str] = servers
+
+        self._active_client: T.Optional[OmronConnect] = None
+
+    def login(self, email: str, password: str) -> T.Optional[str]:
+        """
+        Login with automatic server fallback.
+
+        Returns:
+            Refresh token if successful, None otherwise
+        """
+
+        def login_op(oc_instance: OmronConnect) -> T.Optional[str]:
+            return oc_instance.login(email, password, self.country)
+
+        self._active_client, refresh_token = try_servers(self.servers, self.country, login_op)
+        return refresh_token
+
+    def refresh_oauth2(self, refresh_token: str, **kwargs: T.Any) -> T.Optional[str]:
+        """
+        Refresh OAuth token with automatic server fallback.
+
+        Returns:
+            New refresh token if successful, None otherwise
+        """
+
+        def refresh_op(oc_instance: OmronConnect) -> T.Optional[str]:
+            return oc_instance.refresh_oauth2(refresh_token, **kwargs)
+
+        self._active_client, new_token = try_servers(self.servers, self.country, refresh_op)
+        return new_token
+
+    def get_measurements(
+        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
+    ) -> T.List[MeasurementTypes]:
+        """Delegate to active client."""
+        if not self._active_client:
+            raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
+
+        return self._active_client.get_measurements(device, searchDateFrom, searchDateTo)
+
+    def get_user(self) -> T.Dict[str, T.Any]:
+        """Delegate to active client."""
+        if not self._active_client:
+            raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
+
+        return self._active_client.get_user()
 
 
 ########################################################################################################################

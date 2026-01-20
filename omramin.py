@@ -23,11 +23,10 @@ import inquirer
 
 import omronconnect as OC
 import utils as U
-from regionserver import get_server_for_country_code
 
 ########################################################################################################################
 
-__version__ = "0.1.1"
+__version__ = "0.2.0pre0"
 
 ########################################################################################################################
 
@@ -44,9 +43,9 @@ class Options:
 PATH_DEFAULT_CONFIG = "~/.omramin/config.json"
 
 DEFAULT_CONFIG = {
+    "version": 1,
     "garmin": {},
     "omron": {
-        "server": "",
         "devices": [],
     },
 }
@@ -193,7 +192,20 @@ def garmin_login(_config: str) -> T.Optional[GC.Garmin]:
     return gc
 
 
-def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
+def migrateconfig_path(config: dict) -> dict:
+    version = config.get("version", 0)
+
+    if version < 1:
+        if "server" in config.get("omron", {}):
+            del config["omron"]["server"]
+
+        config["version"] = 1
+
+    return config
+
+
+
+def omron_login(_config: str) -> T.Optional[OC.OmronClient]:
     """Login to OMRON connect"""
 
     try:
@@ -203,17 +215,18 @@ def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
         L.error(f"Config file '{_config}' not found.")
         return None
 
-    ocCfg = config["omron"]
+    config = migrateconfig_path(config)
+    ocCfg = config.get("omron", {})
 
     refreshToken = None
     try:
-        server = ocCfg.get("server", "")
         tokendata = ocCfg.get("tokendata", "")
         email = ocCfg.get("email", "")
-        if not tokendata:
+        country = ocCfg.get("country", "")
+        if not tokendata or not country:
             raise FileNotFoundError
 
-        oc = OC.get_omron_connect(server)
+        oc = OC.OmronClient(country)
         # OmronConnect2 requires email for token refresh
         refreshToken = oc.refresh_oauth2(tokendata, email=email)
         if not refreshToken:
@@ -249,7 +262,7 @@ def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
             inquirer.Text(
                 "country",
                 message="> Enter country code (e.g. 'US')",
-                validate=lambda _, x: get_server_for_country_code(x),
+                validate=lambda _, x: len(x) == 2,
             ),
         ]
         answers = inquirer.prompt(questions)
@@ -260,14 +273,12 @@ def omron_login(_config: str) -> T.Optional[OC.OmronConnect]:
         email = answers["email"]
         password = answers["password"]
         country = answers["country"]
-        server = get_server_for_country_code(country)
 
-        oc = OC.get_omron_connect(server)
-        refreshToken = oc.login(email=email, password=password, country=country)
+        oc = OC.OmronClient(country)
+        refreshToken = oc.login(email=email, password=password)
         if refreshToken:
             tokendata = refreshToken
             ocCfg["email"] = email
-            ocCfg["server"] = server
             ocCfg["tokendata"] = tokendata
             ocCfg["country"] = country
 
