@@ -334,13 +334,64 @@ def _detect_best_backend() -> str:
     Returns:
         Backend type as string ('system', 'file', or 'encrypted')
     """
-    # In Docker or if no system keyring available
-    if os.path.exists("/.dockerenv") or keyring.get_keyring().__class__.__name__ == "ChainerBackend":
-        L.debug("Detected containerized environment or no system keyring, using file backend")
+    # In Docker, always use file backend
+    if os.path.exists("/.dockerenv"):
+        L.debug("Detected Docker environment, using file backend")
         return KeyringBackend.FILE.value
 
+    kr = keyring.get_keyring()
+
+    # If not a ChainerBackend, check if it's a known system keyring
+    if kr.__class__.__name__ != "ChainerBackend":
+        # Direct system keyring (macOS.Keyring, WinVaultKeyring, SecretService.Keyring)
+        if _is_system_keyring(kr):
+            L.debug(f"Detected system keyring: {kr.__class__.__module__}.{kr.__class__.__name__}")
+            return KeyringBackend.SYSTEM.value
+
+        else:
+            L.debug(f"Unknown keyring backend: {kr.__class__.__name__}, using file backend")
+            return KeyringBackend.FILE.value
+
+    # ChainerBackend: check if it contains any system keyrings
+    from keyring.backends.chainer import ChainerBackend
+
+    if isinstance(kr, ChainerBackend):
+        for backend in kr.backends:
+            if _is_system_keyring(backend):
+                L.debug(f"Found system keyring in chain: {backend.__class__.__module__}.{backend.__class__.__name__}")
+                return KeyringBackend.SYSTEM.value
+
+        L.debug("ChainerBackend contains no system keyrings, using file backend")
+        return KeyringBackend.FILE.value
+
+    # Fallback
     L.debug("Using system keyring backend")
     return KeyringBackend.SYSTEM.value
+
+
+def _is_system_keyring(backend) -> bool:
+    """Check if a keyring backend is a platform system keyring.
+
+    Returns:
+        True if backend is macOS Keychain, Windows Credential Manager, or Linux Secret Service
+    """
+
+    module = backend.__class__.__module__
+    classname = backend.__class__.__name__
+
+    # macOS Keychain
+    if module == "keyring.backends.macOS" and classname == "Keyring":
+        return True
+
+    # Windows Credential Manager
+    if module == "keyring.backends.Windows" and classname == "WinVaultKeyring":
+        return True
+
+    # Linux Secret Service (GNOME Keyring, KWallet, etc.)
+    if module == "keyring.backends.SecretService" and classname == "Keyring":
+        return True
+
+    return False
 
 
 @cache
@@ -1258,6 +1309,7 @@ def cli(ctx, config_path, debug):
 
 
 ########################################################################################################################
+
 
 @cli.command(name="list")
 @click.pass_context
