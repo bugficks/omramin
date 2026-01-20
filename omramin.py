@@ -7,19 +7,23 @@ import asyncio
 import binascii
 import csv
 import dataclasses
+import enum
 import logging
 import logging.config
 import os
 import pathlib
 import platform
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from httpx import HTTPStatusError
+from functools import cache
 
 import bleak
 import click
 import garminconnect as GC
 import garth
 import inquirer
+import keyring
+from httpx import HTTPStatusError
 
 import omronconnect as OC
 import utils as U
@@ -40,7 +44,11 @@ class Options:
 
 ########################################################################################################################
 
-PATH_DEFAULT_CONFIG = "~/.omramin/config.json"
+CONFIG_FILENAME = "config.json"
+CONFIG_DIR_NAME = "omramin"
+
+PATH_DEFAULT_CONFIG = f"~/.{CONFIG_DIR_NAME}/{CONFIG_FILENAME}"
+PATH_XDG_CONFIG = f"~/.config/{CONFIG_DIR_NAME}/{CONFIG_FILENAME}"
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -49,6 +57,13 @@ DEFAULT_CONFIG = {
         "devices": [],
     },
 }
+
+
+class KeyringBackend(enum.StrEnum):
+    SYSTEM = "system"
+    FILE = "file"
+    ENCRYPTED = "encrypted"
+
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -110,75 +125,115 @@ class LoginError(Exception):
     pass
 
 
-def garmin_login(_config: str) -> T.Optional[GC.Garmin]:
+def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
     """Login to Garmin Connect"""
 
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
-        return None
+        config = DEFAULT_CONFIG.copy()
 
-    gcCfg = config["garmin"]
+    gcCfg = config.get("garmin", {})
+
+    # Get email from config or env
+    email = _E("GARMIN_EMAIL") or gcCfg.get("email", "")
 
     def get_mfa():
         return inquirer.text(message="> Enter MFA/2FA code")
 
     logged_in = False
     try:
-        tokendata = gcCfg.get("tokendata", "")
+        # Load tokens from keyring (requires email)
+        tokendata = None
+        if email:
+            tokendata = load_service_tokens(config_path, "garmin", email, migrate_from_config=config)
+
         if not tokendata:
             raise FileNotFoundError
 
-        email = gcCfg["email"]
-        is_cn = gcCfg["is_cn"]
+        is_cn = gcCfg.get("is_cn", False)
         gc = GC.Garmin(email=email, is_cn=is_cn, prompt_mfa=get_mfa)
 
+        L.debug(f"Attempting Garmin login using cached tokens for {email}")
         logged_in = gc.login(tokendata)
         if not logged_in:
+            L.debug("Garmin cached tokens invalid, attempting password login")
             raise FileNotFoundError
 
-    except (FileNotFoundError, binascii.Error):
-        L.info("Garmin login")
-        questions = [
-            inquirer.Text(
-                name="email",
-                message="> Enter email",
-                validate=lambda _, x: x != "",
-            ),
-            inquirer.Password(
-                name="password",
-                message="> Enter password",
-                validate=lambda _, x: x != "",
-            ),
-            inquirer.Confirm(
-                "is_cn",
-                message="> Is this a Chinese account?",
-                default=False,
-            ),
-        ]
-        answers = inquirer.prompt(questions)
-        if not answers:
-            # pylint: disable-next=raise-missing-from
-            raise LoginError("Invalid input")
+        L.debug(f"Garmin login successful using cached tokens for {email}")
 
-        email = answers["email"]
-        password = answers["password"]
-        is_cn = answers["is_cn"]
+    except (FileNotFoundError, binascii.Error, KeyError):
+        # Precedence: env > config > prompt
+        password = _E("GARMIN_PASSWORD")
+        is_cn_str = _E("GARMIN_IS_CN") or str(gcCfg.get("is_cn", "false"))
+        is_cn = is_cn_str.lower() in ("true", "1", "yes")
+
+        # Prompt for missing credentials
+        questions = []
+        if not email:
+            questions.append(
+                inquirer.Text(
+                    name="email",
+                    message="> Enter email",
+                    validate=lambda _, x: x != "",
+                )
+            )
+
+        if not password:
+            questions.append(
+                inquirer.Password(
+                    name="password",
+                    message="> Enter password",
+                    validate=lambda _, x: x != "",
+                )
+            )
+
+        if not _E("GARMIN_IS_CN") and "is_cn" not in gcCfg:
+            questions.append(
+                inquirer.Confirm(
+                    "is_cn",
+                    message="> Is this a Chinese account?",
+                    default=False,
+                )
+            )
+
+        if questions:
+            L.info("Garmin login")
+            answers = inquirer.prompt(questions)
+            if not answers:
+                # pylint: disable-next=raise-missing-from
+                raise LoginError("Invalid input")
+
+            email = answers.get("email", email)
+            password = answers.get("password", password)
+            is_cn = answers.get("is_cn", is_cn)
+
+        if not email or not password:
+            raise LoginError("Missing credentials")
 
         gc = GC.Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=get_mfa)
         logged_in = gc.login()
         if logged_in:
-            gcCfg["email"] = email
-            gcCfg["is_cn"] = is_cn
-            gcCfg["tokendata"] = gc.garth.dumps()
+            # Save credentials to config (if not from env vars)
+            config_changed = False
+            if not _E("GARMIN_EMAIL"):
+                gcCfg["email"] = email
+                config_changed = True
 
-            try:
-                U.json_save(_config, config)
+            if not _E("GARMIN_IS_CN"):
+                gcCfg["is_cn"] = is_cn
+                config_changed = True
 
-            except (OSError, IOError, ValueError) as e:
-                L.error(f"Failed to save configuration: {e}")
+            if config_changed:
+                try:
+                    config["garmin"] = gcCfg
+                    U.json_save(config_path, config)
+                except (OSError, IOError, ValueError) as e:
+                    L.warning(f"Failed to save config: {e}")
+
+            # Save tokens to keyring
+            save_service_tokens(config_path, "garmin", email, gc.garth.dumps())
 
     except garth.exc.GarthHTTPError:
         L.error("Failed to login to Garmin Connect", exc_info=True)
@@ -204,89 +259,354 @@ def migrateconfig_path(config: dict) -> dict:
     return config
 
 
+def get_keyring_file_path(config_path: str) -> str:
+    """Determine keyring file path from config path or env var."""
 
-def omron_login(_config: str) -> T.Optional[OC.OmronClient]:
+    if file_path := _E("OMRAMIN_KEYRING_FILE"):
+        return str(pathlib.Path(file_path).expanduser().resolve())
+
+    config_path_obj = pathlib.Path(config_path).expanduser().resolve()
+    return str(config_path_obj.parent / f"{config_path_obj.stem}.tokens.json")
+
+
+def get_keyring_password() -> T.Optional[str]:
+    """Get password for encrypted keyring backend."""
+
+    password = _E("OMRAMIN_KEYRING_PASSWORD")
+    if not password:
+        raise ValueError(
+            "Encrypted keyring backend requires password. Set OMRAMIN_KEYRING_PASSWORD environment variable."
+        )
+
+    return password
+
+
+def _detect_best_backend() -> str:
+    """Detect best keyring backend for current environment.
+
+    Returns:
+        Backend type as string ('system', 'file', or 'encrypted')
+    """
+    # In Docker or if no system keyring available
+    if os.path.exists("/.dockerenv") or keyring.get_keyring().__class__.__name__ == "ChainerBackend":
+        L.debug("Detected containerized environment or no system keyring, using file backend")
+        return KeyringBackend.FILE.value
+
+    L.debug("Using system keyring backend")
+    return KeyringBackend.SYSTEM.value
+
+
+@cache
+def get_keyring_backend(config_path: str):
+    """Get configured keyring backend instance.
+
+    Respects standard keyring environment variables with precedence:
+    1. PYTHON_KEYRING_BACKEND (standard keyring library variable)
+    2. OMRAMIN_KEYRING_BACKEND (app-specific override)
+    3. Auto-detection based on environment
+
+    Cached per config_path to avoid duplicate initialization.
+    """
+    # Check for standard keyring environment variable first
+    python_backend = _E("PYTHON_KEYRING_BACKEND")
+    if python_backend:
+        try:
+            # Import and instantiate the backend class
+            module_name, class_name = python_backend.rsplit(".", 1)
+            module = __import__(module_name, fromlist=[class_name])
+            backend_class = getattr(module, class_name)
+            kr = backend_class()
+
+            # Configure file path for file-based backends
+            if hasattr(kr, "file_path"):
+                kr.file_path = get_keyring_file_path(config_path)
+
+            if hasattr(kr, "keyring_key"):
+                kr.keyring_key = get_keyring_password()
+
+            L.debug(f"Using keyring backend from PYTHON_KEYRING_BACKEND: {python_backend}")
+            return kr
+
+        except Exception as e:
+            L.warning(f"Failed to load PYTHON_KEYRING_BACKEND '{python_backend}': {e}")
+            # Fall through to OMRAMIN_KEYRING_BACKEND logic
+
+    # Fall back to app-specific configuration
+    backend_str = _E("OMRAMIN_KEYRING_BACKEND")
+
+    # Auto-detect if not explicitly set
+    if not backend_str:
+        backend_str = _detect_best_backend()
+
+    backend_str = backend_str.lower()
+
+    # Auto-upgrade to cryptfile backend if password is set and cryptfile is installed
+    if backend_str == KeyringBackend.FILE.value and _E("OMRAMIN_KEYRING_PASSWORD"):
+        try:
+            import keyrings.cryptfile.cryptfile
+
+            # cryptfile is available, use it
+            L.debug("Password set and cryptfile available, using cryptfile backend")
+            kr = keyrings.cryptfile.cryptfile.CryptFileKeyring()
+            kr.file_path = get_keyring_file_path(config_path)
+            if hasattr(kr, "keyring_key"):
+                kr.keyring_key = get_keyring_password()
+
+            return kr
+        except ImportError:
+            # cryptfile not available, fall back to encrypted file backend
+            L.debug("Password set but cryptfile not installed, using encrypted file backend")
+            backend_str = KeyringBackend.ENCRYPTED.value
+
+    try:
+        backend_type = KeyringBackend(backend_str)
+
+    except ValueError:
+        L.warning(f"Unknown keyring backend '{backend_str}', using system backend")
+        backend_type = KeyringBackend.SYSTEM
+
+    if backend_type == KeyringBackend.SYSTEM:
+        return keyring.get_keyring()
+
+    elif backend_type == KeyringBackend.FILE:
+        try:
+            from keyrings.alt.file import PlaintextKeyring
+
+        except ImportError as e:
+            raise ImportError(
+                "File backend requires 'keyrings.alt' package. Install with: pip install keyrings.alt"
+            ) from e
+
+        kr = PlaintextKeyring()
+        kr.file_path = get_keyring_file_path(config_path)
+        return kr
+
+    elif backend_type == KeyringBackend.ENCRYPTED:
+        try:
+            from keyrings.alt.file import EncryptedKeyring
+
+        except ImportError as e:
+            raise ImportError(
+                "Encrypted backend requires 'keyrings.alt' package. Install with: pip install keyrings.alt"
+            ) from e
+
+        kr = EncryptedKeyring()
+        kr.file_path = get_keyring_file_path(config_path)
+        kr.keyring_key = get_keyring_password()
+        return kr
+
+
+def _keyring_id(service: str, email: str) -> T.Tuple[str, str]:
+    """Email-based keyring ID.
+
+    Args:
+        service: Service type ('garmin' or 'omron')
+        email: User's email address
+
+    Returns:
+        Tuple of (service_name, username) for keyring lookup
+        Format: ("omramin+garmin:user@example.com", "user@example.com")
+    """
+
+    if not email:
+        raise ValueError("Email is required for keyring ID")
+
+    return f"omramin+{service}:{email}", email
+
+
+def load_service_tokens(
+    config_path: str, service: str, email: str, *, migrate_from_config: T.Optional[dict] = None
+) -> T.Optional[str]:
+    """Load tokens for a specific service from keyring backend.
+
+    Args:
+        config_path: Path to config file (used for legacy file migration)
+        service: Service type ('garmin' or 'omron')
+        email: User's email address
+        migrate_from_config: Config dict to migrate tokens from (optional)
+
+    Returns:
+        Token data string or None if not found
+    """
+
+    if not email:
+        L.debug(f"Cannot load {service} tokens: email not available")
+        return None
+
+    # Try loading from keyring backend
+    try:
+        backend = get_keyring_backend(config_path)
+        service_name, username = _keyring_id(service, email)
+        tokendata = backend.get_password(service_name, username)
+        if tokendata:
+            L.debug(f"Loaded {service} tokens from keyring backend")
+            return tokendata
+
+    except Exception as e:
+        L.debug(f"Could not load {service} tokens from keyring: {e}")
+
+    # Try migration from config.json (embedded tokens)
+    if migrate_from_config and service in migrate_from_config:
+        service_cfg = migrate_from_config[service]
+        if "tokendata" in service_cfg:
+            tokendata = service_cfg["tokendata"]
+            L.debug(f"Migrating {service} tokens from {CONFIG_FILENAME}")
+            if save_service_tokens(config_path, service, email, tokendata):
+                L.info(f"Migrated {service} tokens from {CONFIG_FILENAME}")
+
+            return tokendata
+
+    L.debug(f"No {service} tokens found")
+    return None
+
+
+def save_service_tokens(config_path: str, service: str, email: str, tokendata: str) -> bool:
+    """Save tokens for a specific service to keyring backend.
+
+    Args:
+        config_path: Path to config file
+        service: Service type ('garmin' or 'omron')
+        email: User's email address
+        tokendata: Token data to save
+
+    Returns:
+        True if successful, False otherwise
+    """
+
+    if not email:
+        L.error(f"Cannot save {service} tokens: email not available")
+        return False
+
+    try:
+        backend = get_keyring_backend(config_path)
+        service_name, username = _keyring_id(service, email)
+        backend.set_password(service_name, username, tokendata)
+        L.debug(f"Saved {service} tokens to keyring backend")
+        return True
+    except Exception as e:
+        L.error(f"Failed to save {service} tokens: {e}")
+        return False
+
+
+def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
     """Login to OMRON connect"""
 
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
-        return None
+        config = DEFAULT_CONFIG.copy()
 
     config = migrateconfig_path(config)
     ocCfg = config.get("omron", {})
 
+    # Get email from config or env
+    email = _E("OMRON_EMAIL") or ocCfg.get("email", "")
+
     refreshToken = None
+    oc = None
     try:
-        tokendata = ocCfg.get("tokendata", "")
-        email = ocCfg.get("email", "")
+        # Load tokens from keyring (requires email)
+        tokendata = None
+        if email:
+            tokendata = load_service_tokens(config_path, "omron", email, migrate_from_config=config)
+
         country = ocCfg.get("country", "")
+
         if not tokendata or not country:
             raise FileNotFoundError
 
         oc = OC.OmronClient(country)
         # OmronConnect2 requires email for token refresh
+        L.debug(f"Attempting OMRON token refresh for {email} (country={country})")
         refreshToken = oc.refresh_oauth2(tokendata, email=email)
-        if not refreshToken:
-            raise FileNotFoundError
-
         # Save the new refresh token (OMRON rotates tokens on each refresh)
-        if refreshToken != tokendata:
-            ocCfg["tokendata"] = refreshToken
-            try:
-                U.json_save(_config, config)
+        if refreshToken and refreshToken != tokendata and email:
+            if save_service_tokens(config_path, "omron", email, refreshToken):
                 L.debug("OMRON refresh token updated and saved")
-            except (OSError, IOError, ValueError) as e:
-                L.warning(f"Failed to save refreshed token: {e}")
 
-    except (HTTPStatusError, FileNotFoundError) as e:
+            else:
+                L.warning("Failed to save refreshed token")
+
+    except (HTTPStatusError, FileNotFoundError, Exception) as e:
         if isinstance(e, HTTPStatusError):
             L.error(f"Failed to login to OMRON connect: '{e.response.reason_phrase}: {e.response.status_code}'")
             if e.response.status_code != 403:
                 raise
 
-        L.info("Omron login")
-        questions = [
-            inquirer.Text(
-                name="email",
-                message="> Enter email",
-                validate=lambda _, x: x != "",
-            ),
-            inquirer.Password(
-                name="password",
-                message="> Enter password",
-                validate=lambda _, x: x != "",
-            ),
-            inquirer.Text(
-                "country",
-                message="> Enter country code (e.g. 'US')",
-                validate=lambda _, x: len(x) == 2,
-            ),
-        ]
-        answers = inquirer.prompt(questions)
-        if not answers:
-            # pylint: disable-next=raise-missing-from
-            raise LoginError("Invalid input")
+        elif not isinstance(e, FileNotFoundError):
+            L.debug(f"Token refresh failed with {type(e).__name__}: {e}", exc_info=True)
 
-        email = answers["email"]
-        password = answers["password"]
-        country = answers["country"]
+        # Precedence: env > config > prompt
+        password = _E("OMRON_PASSWORD")
+        country = _E("OMRON_COUNTRY") or ocCfg.get("country", "")
+
+        # Prompt for missing credentials
+        questions = []
+        if not email:
+            questions.append(
+                inquirer.Text(
+                    name="email",
+                    message="> Enter email",
+                    validate=lambda _, x: x != "",
+                )
+            )
+
+        if not password:
+            questions.append(
+                inquirer.Password(
+                    name="password",
+                    message="> Enter password",
+                    validate=lambda _, x: x != "",
+                )
+            )
+
+        if not country:
+            questions.append(
+                inquirer.Text(
+                    "country",
+                    message="> Enter country code (e.g. 'US')",
+                    validate=lambda _, x: len(x) == 2,
+                )
+            )
+
+        if questions:
+            L.info("Omron login")
+            answers = inquirer.prompt(questions)
+            if not answers:
+                # pylint: disable-next=raise-missing-from
+                raise LoginError("Invalid input")
+
+            email = answers.get("email", email)
+            password = answers.get("password", password)
+            country = answers.get("country", country)
+
+        if not email or not password or not country:
+            raise LoginError("Missing credentials")
 
         oc = OC.OmronClient(country)
-        refreshToken = oc.login(email=email, password=password)
+        refreshToken = oc.login(email, password)
+
         if refreshToken:
-            tokendata = refreshToken
-            ocCfg["email"] = email
-            ocCfg["tokendata"] = tokendata
-            ocCfg["country"] = country
+            # Save credentials to config (if not from env vars)
+            config_changed = False
+            if not _E("OMRON_EMAIL"):
+                ocCfg["email"] = email
+                config_changed = True
 
-            try:
-                U.json_save(_config, config)
+            if not _E("OMRON_COUNTRY"):
+                ocCfg["country"] = country
+                config_changed = True
 
-            except (OSError, IOError, ValueError) as e:
-                L.error(f"Failed to save configuration: {e}")
+            if config_changed:
+                try:
+                    config["omron"] = ocCfg
+                    U.json_save(config_path, config)
+                except (OSError, IOError, ValueError) as e:
+                    L.warning(f"Failed to save config: {e}")
+
+            # Save tokens to keyring
+            save_service_tokens(config_path, "omron", email, refreshToken)
 
     if refreshToken:
         L.info("Logged in to OMRON connect")
@@ -294,6 +614,40 @@ def omron_login(_config: str) -> T.Optional[OC.OmronClient]:
 
     L.error("Failed to login to OMRON connect")
     return None
+
+
+@contextmanager
+def config_write_handler(config_path: str, config: dict):
+    """Context manager for safe config writes with helpful error messages.
+
+    Usage:
+        with config_write_handler(config_path, config):
+            # Modify config
+            config["omron"]["devices"].append(device)
+
+    Args:
+        config_path: Path to config file
+        config: Config dictionary to save
+
+    Raises:
+        OSError, IOError, PermissionError, ValueError: On save failures
+    """
+
+    try:
+        yield config
+        U.json_save(config_path, config)
+
+    except (OSError, IOError, PermissionError, ValueError) as e:
+        if isinstance(e, PermissionError) or "read-only" in str(e).lower():
+            L.error("Cannot modify config: file is read-only")
+            L.info("To manage devices, either:")
+            L.info(f"  1. Make {CONFIG_FILENAME} writable, OR")
+            L.info(f"  2. Edit {CONFIG_FILENAME} manually and restart")
+
+        else:
+            L.error(f"Failed to save configuration: {e}")
+
+        raise
 
 
 def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
@@ -318,8 +672,10 @@ def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
                         # Validate it's actually hex before parsing
                         if len(_mac_str) == _mac_len and all(c in "0123456789ABCDEF" for c in _mac_str):
                             macAddr = ":".join(_mac_str[i : i + 2] for i in range(0, _mac_len, 2))
+
                         else:
                             continue
+
                     except (IndexError, ValueError):
                         continue
 
@@ -359,7 +715,6 @@ def device_new(
     user: T.Optional[int],
     enabled: T.Optional[bool],
 ) -> T.Optional[DeviceType]:
-
     questions = []
     if name is None:
         questions.append(
@@ -369,6 +724,7 @@ def device_new(
                 default="",
             )
         )
+
     if category is None:
         questions.append(
             inquirer.List(
@@ -388,6 +744,7 @@ def device_new(
                 choices=[1, 2, 3, 4],
             )
         )
+
     if enabled is None:
         questions.append(
             inquirer.List(
@@ -456,7 +813,7 @@ def device_edit(device: DeviceType) -> bool:
 
 
 def omron_sync_device_to_garmin(
-    oc: OC.OmronConnect, gc: GC.Garmin, ocDev: OC.OmronDevice, startLocal: int, endLocal: int, opts: Options
+    oc: OC.OmronClient, gc: GC.Garmin, ocDev: OC.OmronDevice, startLocal: int, endLocal: int, opts: Options
 ) -> None:
     if endLocal - startLocal <= 0:
         L.info("Invalid date range")
@@ -466,6 +823,9 @@ def omron_sync_device_to_garmin(
     enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
 
     L.info(f"Start synchronizing device '{ocDev.name}' from {startdateStr} to {enddateStr}")
+    L.debug(
+        f"Device details: MAC={ocDev.macaddr}, Serial={ocDev.serial}, User={ocDev.user}, Category={ocDev.category.name}"
+    )
 
     measurements = oc.get_measurements(ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000))
     if not measurements:
@@ -473,11 +833,18 @@ def omron_sync_device_to_garmin(
         return
 
     L.info(f"Downloaded {len(measurements)} entries from 'OMRON connect' for '{ocDev.name}'")
+    L.debug(
+        f"Measurement date range: {datetime.fromtimestamp(measurements[0].measurementDate / 1000).isoformat()} to {datetime.fromtimestamp(measurements[-1].measurementDate / 1000).isoformat()}"
+    )
 
     # get measurements from Garmin Connect for the same date range
+    category = "weigh-ins" if ocDev.category == OC.DeviceCategory.SCALE else "blood pressure"
+    L.debug(f"Fetching existing Garmin {category} for date range {startdateStr} to {enddateStr}")
+
     if ocDev.category == OC.DeviceCategory.SCALE:
         gcData = garmin_get_weighins(gc, startdateStr, enddateStr)
         sync_scale_measurements(gc, gcData, measurements, opts)
+
     elif ocDev.category == OC.DeviceCategory.BPM:
         gcData = garmin_get_bp_measurements(gc, startdateStr, enddateStr)
         sync_bp_measurements(gc, gcData, measurements, opts)
@@ -636,53 +1003,155 @@ def filter_devices(
     devices = [d for d in devices if d["enabled"]]
     if category:
         devices = [d for d in devices if d["category"] == category.name]
+
     if devnames:
         devices = [d for d in devices if d["name"] in devnames or d["macaddr"] in devnames]
+
     return devices
 
 
+def find_device(
+    devices: T.List[T.Dict[str, T.Any]],
+    identifier: str,
+    *,
+    prompt_if_empty: bool = False,
+    prompt_message: str = "Select device",
+) -> T.Optional[T.Dict[str, T.Any]]:
+    """Find device by name or MAC address with optional interactive prompt.
+
+    Args:
+        devices: List of device dictionaries
+        identifier: Device name or MAC address to find
+        prompt_if_empty: If True and identifier is empty, prompt user to select
+        prompt_message: Message for interactive prompt
+
+    Returns:
+        Device dictionary if found, None otherwise
+    """
+
+    if not identifier and prompt_if_empty:
+        macaddrs = [d["macaddr"] for d in devices]
+        identifier = inquirer.list_input(prompt_message, choices=sorted(macaddrs))
+
+    if not identifier:
+        return None
+
+    return next(
+        (d for d in devices if d.get("name") == identifier or d.get("macaddr") == identifier),
+        None,
+    )
+
+
 ########################################################################################################################
-class CommonCommand(click.Command):
-    """Common options for all commands"""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
-        self._defaultconfig = PATH_DEFAULT_CONFIG
+def _get_xdg_config_path() -> pathlib.Path:
+    """Get XDG config path: $XDG_CONFIG_HOME/omramin/config.json or ~/.config/omramin/config.json"""
 
-        for p in [_E("OMRAMIN_CONFIG", PATH_DEFAULT_CONFIG), "./config.json"]:
-            if pathlib.Path(p).expanduser().resolve().exists():
-                self._defaultconfig = p
+    xdg_config_home = _E("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return pathlib.Path(xdg_config_home) / CONFIG_DIR_NAME / CONFIG_FILENAME
 
-        self.params[0:0] = [
-            click.Option(
-                ("--config", "_config"),
-                type=click.Path(writable=True, dir_okay=False),
-                default=pathlib.Path(self._defaultconfig).expanduser().resolve(),
-                show_default=True,
-                help="Config file",
-            ),
-        ]
+    return pathlib.Path(PATH_XDG_CONFIG).expanduser().resolve()
+
+
+def _get_default_config_path() -> pathlib.Path:
+    """Get default config path with precedence: OMRAMIN_CONFIG > ./config.json > XDG > ~/.omramin/config.json"""
+    # Check environment variable first
+    if env_path := _E("OMRAMIN_CONFIG"):
+        return pathlib.Path(env_path).expanduser().resolve()
+
+    # Check current directory
+    if pathlib.Path(f"./{CONFIG_FILENAME}").exists():
+        return pathlib.Path(f"./{CONFIG_FILENAME}").resolve()
+
+    # Check XDG config path
+    xdg_path = _get_xdg_config_path()
+    if xdg_path.exists():
+        return xdg_path
+
+    # Check legacy path
+    legacy_path = pathlib.Path(PATH_DEFAULT_CONFIG).expanduser().resolve()
+    if legacy_path.exists():
+        return legacy_path
+
+    # Default to XDG path for new installations
+    return xdg_path
+
+
+def _set_keyring_backend_env(ctx, param, value):
+    """Callback to set keyring backend environment variable"""
+
+    if value:
+        os.environ["OMRAMIN_KEYRING_BACKEND"] = value.lower()
+
+    return value
+
+
+def _set_keyring_file_env(ctx, param, value):
+    """Callback to set keyring file environment variable"""
+
+    if value:
+        os.environ["OMRAMIN_KEYRING_FILE"] = str(pathlib.Path(value).expanduser().resolve())
+
+    return value
 
 
 @click.group()
 @click.version_option(__version__)
-def cli():
-    """Sync data from 'OMRON connect' to 'Garmin Connect'"""
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(writable=True, dir_okay=False),
+    default=_get_default_config_path(),
+    show_default=True,
+    help="Config file path",
+)
+@click.option(
+    "--keyring-backend",
+    type=click.Choice(list(KeyringBackend), case_sensitive=False),
+    default=None,
+    show_default=False,
+    expose_value=False,
+    callback=_set_keyring_backend_env,
+    help="Token storage backend: system (auto-detect), file (plaintext), encrypted (password-protected)",
+)
+@click.option(
+    "--keyring-file",
+    type=click.Path(writable=True, dir_okay=False),
+    default=None,
+    show_default=False,
+    expose_value=False,
+    callback=_set_keyring_file_env,
+    help="File path for file/encrypted backends (default: {config}.tokens.json)",
+)
+@click.pass_context
+def cli(ctx, config_path):
+    """Sync data from 'OMRON connect' to 'Garmin Connect'
+
+    Global options must be specified BEFORE the command:
+        omramin sync --days 1
+    """
+
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = str(config_path)
 
 
 ########################################################################################################################
 
 
-@cli.command(name="list", cls=CommonCommand)
-def list_devices(_config: str):
+@cli.command(name="list")
+@click.pass_context
+def list_devices(ctx):
     """List all configured devices."""
 
+    config_path = ctx.obj["config_path"]
+
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
+        L.error(f"Config file '{config_path}' not found.")
         return
 
     devices = config.get("omron", {}).get("devices", [])
@@ -705,7 +1174,7 @@ def list_devices(_config: str):
 ########################################################################################################################
 
 
-@cli.command(name="add", cls=CommonCommand)
+@cli.command(name="add")
 @click.option(
     "--macaddr",
     "-m",
@@ -735,13 +1204,14 @@ def list_devices(_config: str):
     help="User number on the device (1-4).",
 )
 @click.option("--ble-filter", help="BLE device name filter", default=Options().ble_filter, show_default=True)
+@click.pass_context
 def add_device(
+    ctx,
     macaddr: T.Optional[str],
     name: T.Optional[str],
     category: T.Optional[OC.DeviceCategory],
     user: T.Optional[int],
     ble_filter: T.Optional[str],
-    _config: str,
 ):
     """Add a new Omron device to the configuration.
 
@@ -759,14 +1229,18 @@ def add_device(
 
 
     """
+
+    config_path = ctx.obj["config_path"]
+
     opts = Options()
-    opts.ble_filter = ble_filter
+    if ble_filter is not None:
+        opts.ble_filter = ble_filter
 
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        config = DEFAULT_CONFIG
+        config = DEFAULT_CONFIG.copy()
 
     devices = config.get("omron", {}).get("devices", [])
 
@@ -782,6 +1256,7 @@ def add_device(
         for scanned in bleDevices:
             if any(d["macaddr"] == scanned for d in devices):
                 tmp.remove(scanned)
+
         bleDevices = tmp
 
         if not bleDevices:
@@ -802,26 +1277,31 @@ def add_device(
         if device := device_new(macaddr=macaddr, name=name, category=category, user=user, enabled=True):
             config["omron"]["devices"].append(device)
             try:
-                U.json_save(_config, config)
+                with config_write_handler(config_path, config):
+                    pass  # device already appended to config
+
                 L.info("Device(s) added successfully.")
 
-            except (OSError, IOError, ValueError) as e:
-                L.error(f"Failed to save configuration: {e}")
+            except (OSError, IOError, PermissionError, ValueError):
+                pass  # Error already logged by context manager
 
 
 ########################################################################################################################
 
 
-@cli.command(name="config", cls=CommonCommand)
+@cli.command(name="config")
 @click.argument("devname", required=True, type=str, nargs=1)
-def edit_device(devname: str, _config: str):
+@click.pass_context
+def edit_device(ctx, devname: str):
     """Edit device configuration."""
 
+    config_path = ctx.obj["config_path"]
+
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
+        L.error(f"Config file '{config_path}' not found.")
         return
 
     devices = config.get("omron", {}).get("devices", [])
@@ -829,68 +1309,66 @@ def edit_device(devname: str, _config: str):
         L.info("No devices configured.")
         return
 
-    if not devname:
-        macaddrs = [d["macaddr"] for d in devices]
-        devname = inquirer.list_input("Select device to configure", choices=sorted(macaddrs))
-
-    device = next((d for d in devices if d.get("name") == devname or d.get("macaddr") == devname), None)
+    device = find_device(devices, devname, prompt_if_empty=True, prompt_message="Select device to configure")
     if not device:
         L.info(f"No device found with identifier: '{devname}'")
         return
 
     if device_edit(device):
         try:
-            U.json_save(_config, config)
+            with config_write_handler(config_path, config):
+                pass  # device modified in-place
+
             L.info(f"Device '{devname}' configured successfully.")
 
-        except (OSError, IOError, ValueError) as e:
-            L.error(f"Failed to save configuration: {e}")
+        except (OSError, IOError, PermissionError, ValueError):
+            pass  # Error already logged by context manager
 
 
 ########################################################################################################################
 
 
-@cli.command(name="remove", cls=CommonCommand)
+@cli.command(name="remove")
 @click.argument("devname", required=True, type=str, nargs=1)
-def remove_device(devname: str, _config: str):
+@click.pass_context
+def remove_device(ctx, devname: str):
     """Remove a device by name or MAC address."""
 
+    config_path = ctx.obj["config_path"]
+
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
+        L.error(f"Config file '{config_path}' not found.")
         return
 
     devices = config.get("omron", {}).get("devices", [])
 
-    if not devname:
-        macaddrs = [d["macaddr"] for d in devices]
-        devname = inquirer.list_input("Select device to remove", choices=sorted(macaddrs))
-
-    device = next((d for d in devices if d.get("name") == devname or d.get("macaddr") == devname), None)
-
+    device = find_device(devices, devname, prompt_if_empty=True, prompt_message="Select device to remove")
     if not device:
         L.info(f"No device found with identifier: {devname}")
         return
 
     devices.remove(device)
     try:
-        U.json_save(_config, config)
+        with config_write_handler(config_path, config):
+            pass  # device already removed
+
         L.info(f"Device '{devname}' removed successfully.")
 
-    except (OSError, IOError, ValueError) as e:
-        L.error(f"Failed to save configuration: {e}")
+    except (OSError, IOError, PermissionError, ValueError):
+        pass  # Error already logged by context manager
 
 
 ########################################################################################################################
 
 
-@cli.command(name="sync", cls=CommonCommand)
+@cli.command(name="sync")
 @click.argument("devnames", required=False, nargs=-1)
 @click.option(
     "--category",
     "-c",
-    "_category",
+    "device_category",
     required=False,
     type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
 )
@@ -905,13 +1383,14 @@ def remove_device(devname: str, _config: str):
     show_default=True,
     help="Do not write to Garmin Connect.",
 )
+@click.pass_context
 def sync_device(
+    ctx,
     devnames: T.List[str],
-    _category: T.Optional[str],
+    device_category: T.Optional[str],
     days: int,
     overwrite: bool,
     no_write: bool,
-    _config: str,
 ):
     """Sync DEVNAMES... to Garmin Connect.
 
@@ -929,18 +1408,20 @@ def sync_device(
         python omramin.py sync 00:11:22:33:44:55 "my scale" --days 1
     """
 
+    config_path = ctx.obj["config_path"]
+
     opts = Options()
     opts.overwrite = overwrite
     opts.write_to_garmin = not no_write
 
     try:
-        config = U.json_load(_config)
+        config = U.json_load(config_path)
 
     except FileNotFoundError:
-        L.error(f"Config file '{_config}' not found.")
+        L.error(f"Config file '{config_path}' not found.")
         return
 
-    category = OC.DeviceCategory[_category] if _category else None
+    category = OC.DeviceCategory[device_category] if device_category else None
 
     devices = config.get("omron", {}).get("devices", [])
     if not devices:
@@ -949,6 +1430,7 @@ def sync_device(
 
     try:
         startLocal, endLocal = calculate_date_range(days)
+
     except DateRangeException:
         L.info("Invalid date range")
         return
@@ -960,13 +1442,15 @@ def sync_device(
         return
 
     try:
-        gc = garmin_login(_config)
+        gc = garmin_login(config_path)
+
     except LoginError:
         L.info("Failed to login to Garmin Connect.")
         return
 
     try:
-        oc = omron_login(_config)
+        oc = omron_login(config_path)
+
     except LoginError:
         L.info("Failed to login to OMRON connect.")
         return
@@ -984,37 +1468,46 @@ def sync_device(
 ########################################################################################################################
 
 
-@cli.command(name="export", cls=CommonCommand)
+@cli.command(name="export")
 @click.argument("devnames", required=False, nargs=-1)
 @click.option(
     "--category",
     "-c",
-    "_category",
+    "device_category",
     required=True,
     type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
 )
 @click.option("--days", default=0, show_default=True, type=click.INT, help="Number of days to sync from today.")
 @click.option(
     "--format",
-    "_format",
+    "output_format",
     type=click.Choice(["csv", "json"], case_sensitive=False),
     default="csv",
     help="Output format",
 )
 @click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.pass_context
 def export_measurements(
+    ctx,
     devnames: T.Optional[T.List[str]],
-    _category: str,
+    device_category: str,
     days: int,
-    _format: T.Optional[str],
+    output_format: T.Optional[str],
     output: T.Optional[str],
-    _config: str,
 ):
     """Export device measurements to CSV or JSON format."""
 
-    config = U.json_load(_config)
+    config_path = ctx.obj["config_path"]
+
+    try:
+        config = U.json_load(config_path)
+
+    except FileNotFoundError:
+        L.error(f"Config file '{config_path}' not found.")
+        return
+
     devices = config.get("omron", {}).get("devices", [])
-    category = OC.DeviceCategory[_category]
+    category = OC.DeviceCategory[device_category]
 
     try:
         startLocal, endLocal = calculate_date_range(days)
@@ -1023,7 +1516,7 @@ def export_measurements(
         return
 
     # filter devices by enabled, category and name/mac address
-    devices = filter_devices(devices, devnames=devnames)
+    devices = filter_devices(devices, devnames=devnames, category=category)
     if not devices:
         L.info("No matching devices found")
         return
@@ -1032,7 +1525,7 @@ def export_measurements(
     enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
 
     try:
-        oc = omron_login(_config)
+        oc = omron_login(config_path)
     except LoginError:
         L.info("Failed to login to OMRON connect.")
         return
@@ -1058,10 +1551,10 @@ def export_measurements(
     if not output:
         output = (
             f"omron_{category.name}_{datetime.fromtimestamp(startLocal).date()}_"
-            f"{datetime.fromtimestamp(endLocal).date()}.{_format}"
+            f"{datetime.fromtimestamp(endLocal).date()}.{output_format}"
         )
 
-    if _format == "json":
+    if output_format == "json":
         export_json(output, exportdata)
 
     else:
@@ -1088,6 +1581,7 @@ def export_csv(output: str, exportdata: T.Dict[OC.OmronDevice, T.List[OC.Measure
                         f, fieldnames=row.keys(), quotechar='"', quoting=csv.QUOTE_ALL, lineterminator="\n"
                     )
                     writer.writeheader()
+
                 writer.writerow(row)
 
 
@@ -1110,7 +1604,9 @@ def export_json(output: str, exportdata: T.Dict[OC.OmronDevice, T.List[OC.Measur
 ########################################################################################################################
 
 if __name__ == "__main__":
-    pathlib.Path("~/.omramin").expanduser().resolve().mkdir(parents=True, exist_ok=True)
+    # Create config directory (XDG or legacy)
+    default_config = _get_default_config_path()
+    default_config.parent.mkdir(parents=True, exist_ok=True)
 
     cli()
 
