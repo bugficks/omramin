@@ -95,10 +95,13 @@ class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, o: T.Any) -> T.Any:
         if dataclasses.is_dataclass(o):
             return dataclasses.asdict(o)  # type: ignore[call-overload,arg-type]
+
         if isinstance(o, types.SimpleNamespace):
             return o.__dict__
+
         if isinstance(o, tzinfo):
             return str(o)
+
         return super().default(o)
 
 
@@ -173,7 +176,7 @@ def daterange(start_date: date, end_date: date) -> T.Generator[date, None, None]
 
 
 def datefromdatetime(dt: datetime) -> date:
-    return datetime.combine(dt.date(), datetime.min.time())
+    return datetime.combine(dt.date(), datetime.min.time()).date()
 
 
 ########################################################################################################################
@@ -187,9 +190,10 @@ def deep_update(d: T.Dict[KeyType, T.Any], u: T.Dict[KeyType, T.Any], *, existin
             continue
         # pylint: disable-next=no-member
         if isinstance(v, collections.abc.Mapping) and isinstance(v, dict):
-            r[k] = deep_update(r.get(k, type(r)()), v)
+            r[k] = deep_update(r.get(k, type(r)()), v, existing=existing)
         else:
             r[k] = v
+
     return r
 
 
@@ -204,7 +208,7 @@ def deep_merge(d: T.Dict[KeyType, T.Any], u: T.Dict[KeyType, T.Any], *, existing
             continue
         # pylint: disable-next=no-member
         if isinstance(v, collections.abc.Mapping) and isinstance(v, dict):
-            r[k] = deep_merge(r.get(k, type(r)()), v)
+            r[k] = deep_merge(r.get(k, type(r)()), v, existing=existing)
         else:
             r[k] = deepcopy(u[k])
 
