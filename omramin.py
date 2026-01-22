@@ -1704,7 +1704,7 @@ def export_measurements(
     if not oc:
         return
 
-    exportdata = {}
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]] = {}
     for device in devices:
         ocDev = OC.OmronDevice(**device)
         L.info(f"Exporting device '{ocDev.name}' from {startdateStr} to {enddateStr}")
@@ -1713,7 +1713,7 @@ def export_measurements(
             ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000)
         )
         if measurements:
-            exportdata[ocDev] = measurements
+            exportdata[ocDev.serial] = (ocDev, measurements)
 
     if not exportdata:
         L.info("No measurements found")
@@ -1734,10 +1734,13 @@ def export_measurements(
     L.info(f"Exported {len(exportdata)} measurements to {output}")
 
 
-def export_csv(output: str, exportdata: T.Dict[OC.OmronDevice, T.List[OC.MeasurementTypes]]) -> None:
+def export_csv(
+    output: str,
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
+) -> None:
     with open(output, "w", newline="\n", encoding="utf-8") as f:
         writer = None
-        for ocDev, measurements in exportdata.items():
+        for ocDev, measurements in exportdata.values():
             for m in measurements:
                 dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
                 row = {
@@ -1756,9 +1759,12 @@ def export_csv(output: str, exportdata: T.Dict[OC.OmronDevice, T.List[OC.Measure
                 writer.writerow(row)
 
 
-def export_json(output: str, exportdata: T.Dict[OC.OmronDevice, T.List[OC.MeasurementTypes]]) -> None:
+def export_json(
+    output: str,
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
+) -> None:
     data = []
-    for ocDev, measurements in exportdata.items():
+    for ocDev, measurements in exportdata.values():
         for m in measurements:
             dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
             entry = {
