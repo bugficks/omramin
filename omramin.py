@@ -1,4 +1,19 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "bleak>=0.22.3",
+#   "click>=8.1.7",
+#   "garminconnect>=0.2.25",
+#   "garth>=0.5.21; python_version>='3.14'",
+#   "httpx[http2,cli,brotli]>=0.28.1",
+#   "inquirer>=3.4.0",
+#   "json5>=0.10.0",
+#   "keyring>=24.3.0",
+#   "python-dateutil>=2.9.0.post0",
+#   "pytz>=2025.1",
+# ]
+# ///
 ########################################################################################################################
 
 import typing as T  # isort: split
