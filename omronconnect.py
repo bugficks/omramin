@@ -10,6 +10,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import zlib
 
 import httpx
 import pytz
@@ -25,6 +26,26 @@ L = logging.getLogger("omronconnect")
 transport_set_logger(L)
 
 _debugSaveResponse = False
+
+########################################################################################################################
+# Monkey-patch httpx GZipDecoder to handle OMRON servers that claim gzip but send uncompressed data
+
+
+def _patched_gzip_decode(self, data: bytes) -> bytes:
+    """Patched decode that handles servers lying about Content-Encoding: gzip"""
+
+    try:
+        return self.decompressor.decompress(data)
+
+    except zlib.error as exc:
+        try:
+            data.decode("utf-8")
+            L.debug(f"GZip decompression failed: {exc}")
+            return data
+
+        except UnicodeDecodeError:
+            raise httpx.DecodingError(str(exc)) from exc
+
 
 ########################################################################################################################
 
@@ -363,6 +384,9 @@ class OmronConnect1(OmronConnect):
                 "X-Kii-AppKey": app_key,
             },
         )
+
+        # pylint: disable=protected-access
+        setattr(httpx._decoders.GZipDecoder, "decode", _patched_gzip_decode)
 
     def login(self, email: str, password: str, country: str = "") -> T.Optional[str]:
         authData = {
