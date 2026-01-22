@@ -598,8 +598,8 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
     config = migrateconfig_path(config)
     ocCfg = config.get("omron", {})
 
-    # Get email from config or env
-    email = _E("OMRON_EMAIL") or ocCfg.get("email", "")
+    # Get email from config or env (support legacy "username" field)
+    email = _E("OMRON_EMAIL") or ocCfg.get("email", "") or ocCfg.get("username", "")
 
     refreshToken = None
     oc = None
