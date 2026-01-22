@@ -404,7 +404,7 @@ class OmronConnect1(OmronConnect):
             return refresh_token
 
         except KeyError:
-            pass
+            L.error(f"login() -> {r}: '{r.text}'")
 
         return None
 
@@ -424,7 +424,7 @@ class OmronConnect1(OmronConnect):
             return refresh_token
 
         except KeyError:
-            pass
+            L.error(f"refresh_oauth2() -> {r}: '{r.text}'")
 
         return None
 
@@ -456,19 +456,16 @@ class OmronConnect1(OmronConnect):
         resp = r.json()
         L.debug(resp)
 
-        returnedValue = resp["returnedValue"]
-        try:
-            if isinstance(returnedValue, list):
-                returnedValue = returnedValue[0]
-
-            if "errorCode" in returnedValue:
-                L.error(f"get_measurements() -> {returnedValue}")
-                return []
-
-        except KeyError:
-            pass
-
+        returnedValue = resp.get("returnedValue")
         if not returnedValue:
+            L.error(f"get_measurements() -> {r}: '{r.text}'")
+            return []
+
+        if isinstance(returnedValue, list):
+            returnedValue = returnedValue[0]
+
+        if isinstance(returnedValue, dict) and "errorCode" in returnedValue:
+            L.error(f"get_measurements() -> {returnedValue}")
             return []
 
         if _debugSaveResponse:
@@ -615,7 +612,7 @@ class OmronConnect2(OmronConnect):
             return refreshToken
 
         except KeyError:
-            pass
+            L.error(f"login() -> {r}: '{r.text}'")
 
         return None
 
@@ -637,7 +634,7 @@ class OmronConnect2(OmronConnect):
             return refreshToken
 
         except KeyError:
-            pass
+            L.error(f"refresh_oauth2() -> {r}: '{r.text}'")
 
         return None
 
