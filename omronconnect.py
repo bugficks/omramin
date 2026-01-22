@@ -8,9 +8,9 @@ import hashlib
 import json
 import logging
 import re
+import zlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import zlib
 
 import httpx
 import pytz
@@ -695,7 +695,7 @@ class OmronConnect2(OmronConnect):
                     continue
 
                 measurementDate = int(m["measurementDate"])
-                if searchDateTo > 0 and measurementDate > searchDateTo:
+                if 0 < searchDateTo < measurementDate:
                     L.debug(f"skipping date: {measurementDate} > {searchDateTo}")
                     continue
 
@@ -722,7 +722,7 @@ class OmronConnect2(OmronConnect):
                 elif device.category == DeviceCategory.SCALE:
                     weight = float(m["weight"])
                     weightInLbs = float(m["weightInLbs"])
-                    if weight <= 0 and weightInLbs > 0:
+                    if weight <= 0 < weightInLbs:
                         weight = weightInLbs * 0.453592
 
                     # metabolicAge not observed in v2 API responses
@@ -771,7 +771,7 @@ def try_servers(
         except (httpx.ConnectError, httpx.TimeoutException, HTTPStatusError):
             continue
 
-    raise Exception("All servers failed")
+    raise ConnectionError("All servers failed")
 
 
 class OmronClient:

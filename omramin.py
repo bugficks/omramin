@@ -264,15 +264,14 @@ def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
             L.info("Garmin login")
             answers = inquirer.prompt(questions)
             if not answers:
-                # pylint: disable-next=raise-missing-from
-                raise LoginError("Invalid input")
+                raise LoginError("Invalid input") from None
 
             email = answers.get("email", email)
             password = answers.get("password", password)
             is_cn = answers.get("is_cn", is_cn)
 
         if not email or not password:
-            raise LoginError("Missing credentials")
+            raise LoginError("Missing credentials") from None
 
         gc = GC.Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=get_mfa)
         logged_in = gc.login()
@@ -291,6 +290,7 @@ def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
                 try:
                     config["garmin"] = gcCfg
                     U.json_save(config_path, config)
+
                 except (OSError, IOError, ValueError) as e:
                     L.warning(f"Failed to save config: {e}")
 
@@ -363,11 +363,11 @@ def _detect_best_backend() -> str:
             L.debug(f"Detected system keyring: {kr.__class__.__module__}.{kr.__class__.__name__}")
             return KeyringBackend.SYSTEM.value
 
-        else:
-            L.debug(f"Unknown keyring backend: {kr.__class__.__name__}, using file backend")
-            return KeyringBackend.FILE.value
+        L.debug(f"Unknown keyring backend: {kr.__class__.__name__}, using file backend")
+        return KeyringBackend.FILE.value
 
     # ChainerBackend: check if it contains any system keyrings
+    # pylint: disable-next=import-outside-toplevel
     from keyring.backends.chainer import ChainerBackend
 
     if isinstance(kr, ChainerBackend):
@@ -440,7 +440,7 @@ def get_keyring_backend(config_path: str):
             L.debug(f"Using keyring backend from PYTHON_KEYRING_BACKEND: {python_backend}")
             return kr
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             L.warning(f"Failed to load PYTHON_KEYRING_BACKEND '{python_backend}': {e}")
             # Fall through to OMRAMIN_KEYRING_BACKEND logic
 
@@ -456,16 +456,18 @@ def get_keyring_backend(config_path: str):
     # Auto-upgrade to cryptfile backend if password is set and cryptfile is installed
     if backend_str == KeyringBackend.FILE.value and _E("OMRAMIN_KEYRING_PASSWORD"):
         try:
-            import keyrings.cryptfile.cryptfile
+            # pylint: disable-next=import-outside-toplevel
+            from keyrings.cryptfile.cryptfile import CryptFileKeyring
 
             # cryptfile is available, use it
             L.debug("Password set and cryptfile available, using cryptfile backend")
-            kr = keyrings.cryptfile.cryptfile.CryptFileKeyring()
+            kr = CryptFileKeyring()
             kr.file_path = get_keyring_file_path(config_path)
             if hasattr(kr, "keyring_key"):
                 kr.keyring_key = get_keyring_password()
 
             return kr
+
         except ImportError:
             # cryptfile not available, fall back to encrypted file backend
             L.debug("Password set but cryptfile not installed, using encrypted file backend")
@@ -481,8 +483,9 @@ def get_keyring_backend(config_path: str):
     if backend_type == KeyringBackend.SYSTEM:
         return keyring.get_keyring()
 
-    elif backend_type == KeyringBackend.FILE:
+    if backend_type == KeyringBackend.FILE:
         try:
+            # pylint: disable-next=import-outside-toplevel
             from keyrings.alt.file import PlaintextKeyring
 
         except ImportError as e:
@@ -494,8 +497,9 @@ def get_keyring_backend(config_path: str):
         kr.file_path = get_keyring_file_path(config_path)
         return kr
 
-    elif backend_type == KeyringBackend.ENCRYPTED:
+    if backend_type == KeyringBackend.ENCRYPTED:
         try:
+            # pylint: disable-next=import-outside-toplevel
             from keyrings.alt.file import EncryptedKeyring
 
         except ImportError as e:
@@ -507,6 +511,8 @@ def get_keyring_backend(config_path: str):
         kr.file_path = get_keyring_file_path(config_path)
         kr.keyring_key = get_keyring_password()
         return kr
+
+    return None
 
 
 def _keyring_id(service: str, email: str) -> T.Tuple[str, str]:
@@ -555,7 +561,7 @@ def load_service_tokens(
             L.debug(f"Loaded {service} tokens from keyring backend")
             return tokendata
 
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         L.debug(f"Could not load {service} tokens from keyring: {e}")
 
     # Try migration from config.json (embedded tokens)
@@ -596,7 +602,8 @@ def save_service_tokens(config_path: str, service: str, email: str, tokendata: s
         backend.set_password(service_name, username, tokendata)
         L.debug(f"Saved {service} tokens to keyring backend")
         return True
-    except Exception as e:
+
+    except Exception as e:  # pylint: disable=broad-except
         L.error(f"Failed to save {service} tokens: {e}")
         return False
 
@@ -641,7 +648,7 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
             else:
                 L.warning("Failed to save refreshed token")
 
-    except (HTTPStatusError, FileNotFoundError, Exception) as e:
+    except Exception as e:  # pylint: disable=broad-except
         if isinstance(e, HTTPStatusError):
             L.error(f"Failed to login to OMRON connect: '{e.response.reason_phrase}: {e.response.status_code}'")
             if e.response.status_code != 403:
@@ -687,15 +694,14 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
             L.info("Omron login")
             answers = inquirer.prompt(questions)
             if not answers:
-                # pylint: disable-next=raise-missing-from
-                raise LoginError("Invalid input")
+                raise LoginError("Invalid input") from None
 
             email = answers.get("email", email)
             password = answers.get("password", password)
             country = answers.get("country", country)
 
         if not email or not password or not country:
-            raise LoginError("Missing credentials")
+            raise LoginError("Missing credentials") from None
 
         oc = OC.OmronClient(country)
         refreshToken = oc.login(email, password)
@@ -715,7 +721,8 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
                 try:
                     config["omron"] = ocCfg
                     U.json_save(config_path, config)
-                except (OSError, IOError, ValueError) as e:
+
+                except (OSError, IOError, ValueError) as e:  # pylint: disable=redefined-outer-name
                     L.warning(f"Failed to save config: {e}")
 
             # Save tokens to keyring
@@ -946,9 +953,9 @@ def omron_sync_device_to_garmin(
         return
 
     L.info(f"Downloaded {len(measurements)} entries from 'OMRON connect' for '{ocDev.name}'")
-    L.debug(
-        f"Measurement date range: {datetime.fromtimestamp(measurements[0].measurementDate / 1000).isoformat()} to {datetime.fromtimestamp(measurements[-1].measurementDate / 1000).isoformat()}"
-    )
+    first_ts = datetime.fromtimestamp(measurements[0].measurementDate / 1000).isoformat()
+    last_ts = datetime.fromtimestamp(measurements[-1].measurementDate / 1000).isoformat()
+    L.debug(f"Measurement date range: {first_ts} to {last_ts}")
 
     # get measurements from Garmin Connect for the same date range
     category = "weigh-ins" if ocDev.category == OC.DeviceCategory.SCALE else "blood pressure"
@@ -964,7 +971,6 @@ def omron_sync_device_to_garmin(
 
 
 def sync_measurements(
-    gc: GC.Garmin,
     gcData: T.Dict[str, T.Any],
     measurements: T.List[OC.MeasurementTypes],
     handler: MeasurementSyncHandler,
@@ -973,7 +979,6 @@ def sync_measurements(
     """Generic measurement sync with deduplication.
 
     Args:
-        gc: Garmin Connect client
         gcData: Existing Garmin data mapped by key
         measurements: List of measurements from OMRON
         handler: Handler for measurement-specific operations
@@ -1095,7 +1100,7 @@ def sync_scale_measurements(
         delete_key_field="samplePk",
         log_name="weigh-in",
     )
-    sync_measurements(gc, gcData, measurements, handler, opts)
+    sync_measurements(gcData, measurements, handler, opts)
 
 
 def sync_bp_measurements(
@@ -1111,7 +1116,7 @@ def sync_bp_measurements(
         delete_key_field="version",
         log_name="blood pressure",
     )
-    sync_measurements(gc, gcData, measurements, handler, opts)
+    sync_measurements(gcData, measurements, handler, opts)
 
 
 def garmin_get_bp_measurements(gc: GC.Garmin, startdate: str, enddate: str):
@@ -1254,7 +1259,7 @@ def _get_default_config_path() -> pathlib.Path:
     return xdg_path
 
 
-def _set_keyring_backend_env(ctx, param, value):
+def _set_keyring_backend_env(_ctx, _param, value):
     """Callback to set keyring backend environment variable"""
 
     if value:
@@ -1263,7 +1268,7 @@ def _set_keyring_backend_env(ctx, param, value):
     return value
 
 
-def _set_keyring_file_env(ctx, param, value):
+def _set_keyring_file_env(_ctx, _param, value):
     """Callback to set keyring file environment variable"""
 
     if value:
@@ -1524,6 +1529,7 @@ def remove_device(ctx, devname: str):
 
     try:
         config = U.json_load(config_path)
+
     except FileNotFoundError:
         L.error(f"Config file '{config_path}' not found.")
         return
@@ -1697,6 +1703,7 @@ def export_measurements(
 
     try:
         startLocal, endLocal = calculate_date_range(days)
+
     except DateRangeException:
         L.info("Invalid date range")
         return
@@ -1712,6 +1719,7 @@ def export_measurements(
 
     try:
         oc = omron_login(config_path)
+
     except LoginError:
         L.info("Failed to login to OMRON connect.")
         return
@@ -1800,6 +1808,6 @@ if __name__ == "__main__":
     default_config = _get_default_config_path()
     default_config.parent.mkdir(parents=True, exist_ok=True)
 
-    cli()
+    cli()  # pylint: disable=no-value-for-parameter  # Click handles argument parsing
 
 ########################################################################################################################
