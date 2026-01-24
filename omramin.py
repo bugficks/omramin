@@ -349,6 +349,13 @@ def _detect_best_backend() -> str:
     Returns:
         Backend type as string ('system', 'file', or 'encrypted')
     """
+
+    # Windows Credential Manager has 2560-byte limit (UTF-16 encoding)
+    # OMRON OAuth tokens often exceed this limit - use file backend on Windows
+    if platform.system() == "Windows":
+        L.debug("Detected Windows, using file backend (WinVault has 2560-byte limit)")
+        return KeyringBackend.FILE.value
+
     # In Docker, always use file backend
     if os.path.exists("/.dockerenv"):
         L.debug("Detected Docker environment, using file backend")

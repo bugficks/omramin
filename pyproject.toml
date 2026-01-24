@@ -15,6 +15,7 @@ dependencies = [
   "inquirer>=3.4.0",
   "json5>=0.10.0",
   "keyring>=24.3.0",
+  "keyrings.alt>=5.0.0; sys_platform == 'win32'",
   "python-dateutil>=2.9.0.post0",
   "pytz>=2025.1",
 ]
@@ -60,7 +61,13 @@ omramin = "omramin:cli"
 
 [tool.setuptools]
 include-package-data = true
-py-modules = ["omramin", "omronconnect", "utils", "regionserver", "httpxlogtransport"]
+py-modules = [
+  "omramin",
+  "omronconnect",
+  "utils",
+  "regionserver",
+  "httpxlogtransport",
+]
 
 [tool.setuptools.package-data]
 "data" = ["region_v1.json", "region_v2.json"]
