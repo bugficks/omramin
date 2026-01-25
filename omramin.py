@@ -1327,8 +1327,12 @@ def cli(ctx, config_path, debug):
         omramin --debug sync --days 1
     """
 
+    # Create config directory
+    _config_path = str(config_path)
+    pathlib.Path(_config_path).parent.mkdir(parents=True, exist_ok=True)
+
     ctx.ensure_object(dict)
-    ctx.obj["config_path"] = str(config_path)
+    ctx.obj["config_path"] = _config_path
 
     # Configure logging (unless env vars already set)
     if not _E("OMRAMIN_DEBUG"):
@@ -1811,10 +1815,6 @@ def export_json(
 ########################################################################################################################
 
 if __name__ == "__main__":
-    # Create config directory (XDG or legacy)
-    default_config = _get_default_config_path()
-    default_config.parent.mkdir(parents=True, exist_ok=True)
-
     cli()  # pylint: disable=no-value-for-parameter  # Click handles argument parsing
 
 ########################################################################################################################
