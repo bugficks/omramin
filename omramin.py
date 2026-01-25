@@ -10,6 +10,7 @@
 #   "inquirer>=3.4.0",
 #   "json5>=0.10.0",
 #   "keyring>=24.3.0",
+#   "keyrings.alt>=5.0.0; sys_platform == 'win32'",
 #   "python-dateutil>=2.9.0.post0",
 #   "pytz>=2025.1",
 # ]
@@ -187,6 +188,67 @@ class LoginError(Exception):
     pass
 
 
+def prompt_credentials(
+    service_name: str,
+    email: str = "",
+    extra_fields: T.Optional[list] = None,
+) -> T.Optional[dict]:
+    """
+    Prompt for credentials with defaults.
+
+    Args:
+        service_name: Display name (e.g., "Garmin", "OMRON")
+        email: Existing email to show as default
+        extra_fields: List of dicts with field configs:
+            [{"name": "country", "message": "...", "type": "text", "default": "", "validate": ...}]
+            type can be: "text", "password", "confirm"
+
+    Returns:
+        Dict with "email", "password", and any extra field names, or None if cancelled
+    """
+
+    questions = [
+        inquirer.Text(
+            name="email",
+            message="> Enter email",
+            default=email,
+            validate=lambda _, x: x != "",
+        ),
+        inquirer.Password(
+            name="password",
+            message="> Enter password",
+            validate=lambda _, x: x != "",
+        ),
+    ]
+
+    # Add extra fields
+    if extra_fields:
+        for field in extra_fields:
+            field_type = field.get("type", "text")
+            if field_type == "text":
+                questions.append(
+                    inquirer.Text(
+                        name=field["name"],
+                        message=field["message"],
+                        default=field.get("default", ""),
+                        validate=field.get("validate"),
+                    )
+                )
+
+            elif field_type == "confirm":
+                questions.append(
+                    inquirer.Confirm(
+                        name=field["name"],
+                        message=field["message"],
+                        default=field.get("default", False),
+                    )
+                )
+
+    L.info(f"{service_name} login")
+    answers = inquirer.prompt(questions)
+    return answers
+
+
 def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
     """Login to Garmin Connect"""
 
@@ -231,50 +293,62 @@ def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
         is_cn_str = _E("GARMIN_IS_CN") or str(gcCfg.get("is_cn", "false"))
         is_cn = is_cn_str.lower() in ("true", "1", "yes")
 
-        # Prompt for missing credentials
-        questions = []
-        if not email:
-            questions.append(
-                inquirer.Text(
-                    name="email",
-                    message="> Enter email",
-                    validate=lambda _, x: x != "",
-                )
+        # Prompt for credentials if not from env vars
+        if not (email and password and (_E("GARMIN_IS_CN") or "is_cn" in gcCfg)):
+            answers = prompt_credentials(
+                service_name="Garmin",
+                email=email,
+                extra_fields=[
+                    {
+                        "name": "is_cn",
+                        "message": "> Is this a Chinese account?",
+                        "type": "confirm",
+                        "default": is_cn,
+                    }
+                ],
             )
-
-        if not password:
-            questions.append(
-                inquirer.Password(
-                    name="password",
-                    message="> Enter password",
-                    validate=lambda _, x: x != "",
-                )
-            )
-
-        if not _E("GARMIN_IS_CN") and "is_cn" not in gcCfg:
-            questions.append(
-                inquirer.Confirm(
-                    "is_cn",
-                    message="> Is this a Chinese account?",
-                    default=False,
-                )
-            )
-
-        if questions:
-            L.info("Garmin login")
-            answers = inquirer.prompt(questions)
             if not answers:
                 raise LoginError("Invalid input") from None
 
-            email = answers.get("email", email)
-            password = answers.get("password", password)
-            is_cn = answers.get("is_cn", is_cn)
+            email = answers["email"]
+            password = answers["password"]
+            is_cn = answers["is_cn"]
 
         if not email or not password:
             raise LoginError("Missing credentials") from None
 
         gc = GC.Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=get_mfa)
-        logged_in = gc.login()
+        try:
+            logged_in = gc.login()
+
+        except Exception as login_error:  # pylint: disable=broad-except
+            L.error(f"Login failed: {login_error}")
+            L.info("Please re-enter your credentials")
+
+            # Re-prompt for all fields with existing values as defaults
+            answers = prompt_credentials(
+                service_name="Garmin",
+                email=email,
+                extra_fields=[
+                    {
+                        "name": "is_cn",
+                        "message": "> Is this a Chinese account?",
+                        "type": "confirm",
+                        "default": is_cn,
+                    }
+                ],
+            )
+            if not answers:
+                raise LoginError("Invalid input") from login_error
+
+            email = answers["email"]
+            password = answers["password"]
+            is_cn = answers["is_cn"]
+
+            # Retry login with new credentials
+            gc = GC.Garmin(email=email, password=password, is_cn=is_cn, prompt_mfa=get_mfa)
+            logged_in = gc.login()
+
         if logged_in:
             # Save credentials to config (if not from env vars)
             config_changed = False
@@ -349,7 +423,6 @@ def _detect_best_backend() -> str:
     Returns:
         Backend type as string ('system', 'file', or 'encrypted')
     """
-
     # Windows Credential Manager has 2560-byte limit (UTF-16 encoding)
     # OMRON OAuth tokens often exceed this limit - use file backend on Windows
     if platform.system() == "Windows":
@@ -467,7 +540,6 @@ def get_keyring_backend(config_path: str):
             from keyrings.cryptfile.cryptfile import CryptFileKeyring
 
             # cryptfile is available, use it
-            L.debug("Password set and cryptfile available, using cryptfile backend")
             kr = CryptFileKeyring()
             kr.file_path = get_keyring_file_path(config_path)
             if hasattr(kr, "keyring_key"):
@@ -477,7 +549,6 @@ def get_keyring_backend(config_path: str):
 
         except ImportError:
             # cryptfile not available, fall back to encrypted file backend
-            L.debug("Password set but cryptfile not installed, using encrypted file backend")
             backend_str = KeyringBackend.ENCRYPTED.value
 
     try:
@@ -606,6 +677,11 @@ def save_service_tokens(config_path: str, service: str, email: str, tokendata: s
     try:
         backend = get_keyring_backend(config_path)
         service_name, username = _keyring_id(service, email)
+        L.debug(
+            f"Saving {service} token: length={len(tokendata)}, "
+            f"service={service_name!r}, username={username!r}, "
+            f"preview={tokendata[:50]}..."
+        )
         backend.set_password(service_name, username, tokendata)
         L.debug(f"Saved {service} tokens to keyring backend")
         return True
@@ -668,50 +744,63 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
         password = _E("OMRON_PASSWORD")
         country = _E("OMRON_COUNTRY") or ocCfg.get("country", "")
 
-        # Prompt for missing credentials
-        questions = []
-        if not email:
-            questions.append(
-                inquirer.Text(
-                    name="email",
-                    message="> Enter email",
-                    validate=lambda _, x: x != "",
-                )
+        # Prompt for credentials if any are missing
+        if not (email and password and country):
+            answers = prompt_credentials(
+                service_name="OMRON",
+                email=email,
+                extra_fields=[
+                    {
+                        "name": "country",
+                        "message": "> Enter country code (e.g. 'US')",
+                        "type": "text",
+                        "default": country,
+                        "validate": lambda _, x: len(x) == 2,
+                    }
+                ],
             )
-
-        if not password:
-            questions.append(
-                inquirer.Password(
-                    name="password",
-                    message="> Enter password",
-                    validate=lambda _, x: x != "",
-                )
-            )
-
-        if not country:
-            questions.append(
-                inquirer.Text(
-                    "country",
-                    message="> Enter country code (e.g. 'US')",
-                    validate=lambda _, x: len(x) == 2,
-                )
-            )
-
-        if questions:
-            L.info("Omron login")
-            answers = inquirer.prompt(questions)
             if not answers:
                 raise LoginError("Invalid input") from None
 
-            email = answers.get("email", email)
-            password = answers.get("password", password)
-            country = answers.get("country", country)
+            email = answers["email"]
+            password = answers["password"]
+            country = answers["country"]
 
         if not email or not password or not country:
             raise LoginError("Missing credentials") from None
 
         oc = OC.OmronClient(country)
-        refreshToken = oc.login(email, password)
+        try:
+            refreshToken = oc.login(email, password)
+
+        except Exception as login_error:  # pylint: disable=broad-except
+            L.error(f"Login failed: {login_error}")
+            L.info("Please re-enter your credentials")
+
+            # Re-prompt for all fields with existing values as defaults
+            answers = prompt_credentials(
+                service_name="OMRON",
+                email=email,
+                extra_fields=[
+                    {
+                        "name": "country",
+                        "message": "> Enter country code (e.g. 'US')",
+                        "type": "text",
+                        "default": country,
+                        "validate": lambda _, x: len(x) == 2,
+                    }
+                ],
+            )
+            if not answers:
+                raise LoginError("Invalid input") from login_error
+
+            email = answers["email"]
+            password = answers["password"]
+            country = answers["country"]
+
+            # Retry login with new credentials
+            oc = OC.OmronClient(country)
+            refreshToken = oc.login(email, password)
 
         if refreshToken:
             # Save credentials to config (if not from env vars)
