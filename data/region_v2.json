@@ -106,8 +106,7 @@
     ],
     "region": "EU",
     "api_configuration": {
-      "xprod_base_url": "https://vlt-mobile-api.prd.eu.ohiomron.eu/prd",
-      "prod_base_url": "https://oi-api.ohiomron.eu/app",
+      "prod_base_url": "https://vlt-mobile-api.prd.eu.ohiomron.eu/prd",
       "prod_secondary_base_url": "https://oi-api.ohiomron.eu/app"
     }
   },
