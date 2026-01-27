@@ -280,6 +280,12 @@ def ble_mac_to_serial(mac: str) -> str:
     return serial.lower()
 
 
+def serial_to_mac(serial: str) -> str:
+    # e.g. 665544feff332211 to 11:22:33:44:55:66
+    values = [serial[i : i + 2] for i in range(0, len(serial), 2)]
+    return ":".join(values[5:2:-1] + values[2::-1])
+
+
 def convert_weight_to_kg(weight: T.Union[int, float], unit: int) -> float:
     if unit == WeightUnit.G:
         return weight / 1000
@@ -340,6 +346,10 @@ class OmronConnect(ABC):
 
     @abstractmethod
     def get_user(self) -> T.Dict[str, T.Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -433,6 +443,64 @@ class OmronConnect1(OmronConnect):
         r.raise_for_status()
         return r.json()
 
+    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+        r = self._client.post(
+            f"{self._server}{self._APP_URL}/versions/current/synchronizeDeviceConfData",
+            headers=self._headers,
+            json={
+                "countOnlyFlag": 0,
+                # last 30 days
+                "lastSyncDate": int((U.utcnow() - datetime.timedelta(days=30)).timestamp() * 1000),
+            },
+        )
+        r.raise_for_status()
+        resp = r.json()
+
+        def unique_devices(sync_list):
+            devices = {}
+
+            for sync in sync_list:
+                for cat in sync.get("deviceCategoryList", []):
+                    for model in cat.get("deviceModelList", []):
+                        for dev in model.get("deviceSerialIDList", []):
+                            try:
+                                key = f"{dev['deviceSerialID']}:{dev['userNumberInDevice']}"
+                                devices.setdefault(
+                                    key,
+                                    {
+                                        "deviceCategory": cat["deviceCategory"],
+                                        "deviceModel": model["deviceModel"],
+                                        "deviceSerialID": dev["deviceSerialID"],
+                                        "userNumberInDevice": dev["userNumberInDevice"],
+                                    },
+                                )
+
+                            except KeyError:
+                                L.debug("Skipping device with missing required fields")
+                                continue
+
+            return devices
+
+        devices = unique_devices(resp["returnedValue"]["syncList"])
+        result: list[OmronDevice] = []
+        for device in devices.values():
+            try:
+                category = DeviceCategory(device["deviceCategory"])
+
+            except (ValueError, KeyError):
+                L.debug(f"Skipping device with unsupported category: {device.get('deviceModel', 'unknown')}")
+                continue
+
+            ocDev = OmronDevice(
+                category=category,
+                name=f"{device['deviceModel']}:{device['userNumberInDevice']}",
+                macaddr=serial_to_mac(device["deviceSerialID"]),
+                user=int(device["userNumberInDevice"]),
+            )
+            result.append(ocDev)
+
+        return result
+
     # utc timestamps
     def get_measurements(
         self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
@@ -499,6 +567,7 @@ class OmronConnect1(OmronConnect):
 
             if device.category == DeviceCategory.BPM:
                 measurements.extend(self._process_bpm_measurements(dev))
+
             elif device.category == DeviceCategory.SCALE:
                 measurements.extend(self._process_scale_measurements(dev))
 
@@ -645,6 +714,46 @@ class OmronConnect2(OmronConnect):
 
         return resp["data"]
 
+    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+        r = self._client.get(f"{self._server}{self._v2}/init-user?app={self._APP_NAME}", headers=self._headers)
+        r.raise_for_status()
+        resp = r.json()
+        device_list = resp.get("data", {}).get("deviceList", [])
+
+        result: list[OmronDevice] = []
+        for device in device_list:
+            attrs = device.get("attributes", {})
+
+            if not attrs.get("isActive", 0):
+                continue
+
+            macAddress = attrs.get("macAddress", "").strip()
+            if not macAddress:
+                L.debug(f"Skipping device without MAC address: {attrs.get('name', 'unknown')}")
+                continue
+
+            try:
+                deviceCategory = attrs["deviceCategory"]
+                category = DeviceCategory(str(deviceCategory))
+
+            except (ValueError, KeyError):
+                L.debug(f"Skipping device with unsupported category: {attrs.get('name', 'unknown')}")
+                continue
+
+            # Create OmronDevice
+            deviceModel = attrs.get("deviceModel", attrs.get("identifier", "Unknown"))
+            userNumberInDevice = int(attrs.get("userNumberInDevice", 1))
+
+            ocDev = OmronDevice(
+                category=category,
+                name=f"{deviceModel}:{userNumberInDevice}",
+                macaddr=macAddress,
+                user=userNumberInDevice,
+            )
+            result.append(ocDev)
+
+        return result
+
     def get_bp_measurements(
         self, nextpaginationKey: int = 0, lastSyncedTime: int = 0, phoneIdentifier: str = ""
     ) -> T.List[T.Dict[str, T.Any]]:
@@ -744,6 +853,7 @@ class OmronConnect2(OmronConnect):
         data = None
         if device.category == DeviceCategory.BPM:
             data = self.get_bp_measurements(lastSyncedTime=searchDateFrom)
+
         elif device.category == DeviceCategory.SCALE:
             data = self.get_weighins(lastSyncedTime=searchDateFrom)
 
@@ -768,6 +878,7 @@ def try_servers(
             oc = get_omron_connect(server, country)
             result = operation(oc)
             return oc, result
+
         except (httpx.ConnectError, httpx.TimeoutException, HTTPStatusError):
             continue
 
@@ -792,6 +903,7 @@ class OmronClient:
         Raises:
             ValueError: No servers available for country
         """
+
         self.country = country.upper()
         servers = get_servers_for_country_code(self.country)
         if not servers:
@@ -832,6 +944,7 @@ class OmronClient:
         self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
     ) -> T.List[MeasurementTypes]:
         """Delegate to active client."""
+
         if not self._active_client:
             raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
 
@@ -839,10 +952,19 @@ class OmronClient:
 
     def get_user(self) -> T.Dict[str, T.Any]:
         """Delegate to active client."""
+
         if not self._active_client:
             raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
 
         return self._active_client.get_user()
+
+    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+        """Delegate to active client."""
+
+        if not self._active_client:
+            raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
+
+        return self._active_client.get_registered_devices()
 
 
 ########################################################################################################################

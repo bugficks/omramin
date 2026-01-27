@@ -71,6 +71,7 @@ def _load_country_servers() -> T.Dict[str, T.Optional[T.List[str]]]:
         if "cloudUrl" not in group:
             for country in countries:
                 country_servers[country.upper()] = None
+
             continue
 
         # Handle online group (has cloudUrl/appID/appKey)

@@ -78,6 +78,7 @@ class DataclassBase:
     @classmethod
     def from_dict(cls, obj):
         """Ignore extra keys/fields when creating dataclass from dict"""
+
         fieldnames = [f.name for f in dataclasses.fields(cls)]
         # https://stackoverflow.com/a/55096964
         return cls(**{k: v for k, v in obj.items() if k in fieldnames})
@@ -191,6 +192,7 @@ def deep_update(d: T.Dict[KeyType, T.Any], u: T.Dict[KeyType, T.Any], *, existin
         # pylint: disable-next=no-member
         if isinstance(v, collections.abc.Mapping) and isinstance(v, dict):
             r[k] = deep_update(r.get(k, type(r)()), v, existing=existing)
+
         else:
             r[k] = v
 
@@ -209,6 +211,7 @@ def deep_merge(d: T.Dict[KeyType, T.Any], u: T.Dict[KeyType, T.Any], *, existing
         # pylint: disable-next=no-member
         if isinstance(v, collections.abc.Mapping) and isinstance(v, dict):
             r[k] = deep_merge(r.get(k, type(r)()), v, existing=existing)
+
         else:
             r[k] = deepcopy(u[k])
 

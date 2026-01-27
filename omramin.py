@@ -548,7 +548,11 @@ def get_keyring_backend(config_path: str) -> keyring.backend.KeyringBackend:
             return kr
 
         except ImportError:
-            # cryptfile not available, fall back to encrypted file backend
+            L.debug("CryptFileKeyring not available")
+            backend_str = KeyringBackend.ENCRYPTED.value
+
+        except Exception as e:  # pylint: disable=broad-except
+            L.warning(f"CryptFileKeyring failed to initialize, falling back to EncryptedKeyring: '{e}'", exc_info=True)
             backend_str = KeyringBackend.ENCRYPTED.value
 
     try:
@@ -2260,6 +2264,48 @@ def omron_logout_cmd(ctx: click.Context, email: str, clear_config: bool, yes: bo
         except (OSError, IOError, PermissionError) as e:
             L.warning(f"Config file is read-only, cannot clear config entries: {e}")
             L.info("Tokens were cleared successfully")
+
+
+@omron_group.command(name="list-devices")
+@click.pass_context
+def omron_list_devices_cmd(ctx: click.Context) -> None:
+    """List all devices registered with OMRON Connect.
+
+    Fetches and displays devices from OMRON Connect account,
+    including their category, model name, MAC address, and user number.
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    try:
+        # Login to OMRON
+        oc = omron_login(config_path)
+        if not oc:
+            L.error("Failed to login to OMRON")
+            return
+
+        # Fetch registered devices
+        devices = oc.get_registered_devices()
+
+        if not devices:
+            L.info("No devices found in OMRON Connect")
+            return
+
+        # Display devices in formatted output
+        L.info(f"Found {len(devices)} device(s) registered with OMRON Connect:\n")
+
+        for device in devices:
+            click.echo(f"Device: {device.name}")
+            click.echo(f"  Category:    {device.category.name}")
+            click.echo(f"  MAC Address: {device.macaddr}")
+            click.echo(f"  User Number: {device.user}")
+            click.echo()
+
+    except LoginError as e:
+        L.error(f"OMRON login failed: {e}")
+
+    except Exception as e:  # pylint: disable=broad-except
+        L.error(f"Failed to fetch devices: {e}")
 
 
 ########################################################################################################################
