@@ -136,6 +136,8 @@ module = [
   "python-dateutil",
   "dateutil",
   "dateutil.parser",
+  "keyrings.alt.file",
+  "keyrings.cryptfile.cryptfile",
 ]
 
 [tool.flake8]

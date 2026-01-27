@@ -263,7 +263,7 @@ def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
     # Get email from config or env
     email = _E("GARMIN_EMAIL") or gcCfg.get("email", "")
 
-    def get_mfa():
+    def get_mfa() -> str:
         return inquirer.text(message="> Enter MFA/2FA code")
 
     logged_in = False
@@ -464,7 +464,7 @@ def _detect_best_backend() -> str:
     return KeyringBackend.SYSTEM.value
 
 
-def _is_system_keyring(backend) -> bool:
+def _is_system_keyring(backend: keyring.backend.KeyringBackend) -> bool:
     """Check if a keyring backend is a platform system keyring.
 
     Returns:
@@ -490,7 +490,7 @@ def _is_system_keyring(backend) -> bool:
 
 
 @cache
-def get_keyring_backend(config_path: str):
+def get_keyring_backend(config_path: str) -> keyring.backend.KeyringBackend:
     """Get configured keyring backend instance.
 
     Respects standard keyring environment variables with precedence:
@@ -833,7 +833,7 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
 
 
 @contextmanager
-def config_write_handler(config_path: str, config: dict):
+def config_write_handler(config_path: str, config: dict) -> T.Generator[dict, None, None]:
     """Context manager for safe config writes with helpful error messages.
 
     Usage:
@@ -869,15 +869,18 @@ def config_write_handler(config_path: str, config: dict):
 def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
     """Scan for Omron devices in pairing mode"""
 
-    devsFound = {}
+    devsFound: T.Dict[str, str] = {}
 
-    async def scan():
+    async def scan() -> None:
         L.info("Scanning for Omron devices in pairing mode ...")
         L.info("Press Ctrl+C to stop scanning")
         while True:
-            devices = await bleak.BleakScanner.discover(return_adv=True, timeout=1)
-            devices = list(sorted(devices.items(), key=lambda x: x[1][1].rssi, reverse=True))
-            for macAddr, (bleDev, advData) in devices:
+            devices_map: T.Dict[str, T.Tuple[T.Any, T.Any]] = await bleak.BleakScanner.discover(
+                return_adv=True,
+                timeout=1,
+            )
+            sorted_devices = sorted(devices_map.items(), key=lambda x: x[1][1].rssi, reverse=True)
+            for macAddr, (bleDev, advData) in sorted_devices:
                 devName = (bleDev.name or "").strip()
 
                 # Extract MAC address from device name on MacOS
@@ -1215,7 +1218,7 @@ def sync_bp_measurements(
     sync_measurements(gcData, measurements, handler, opts)
 
 
-def garmin_get_bp_measurements(gc: GC.Garmin, startdate: str, enddate: str):
+def garmin_get_bp_measurements(gc: GC.Garmin, startdate: str, enddate: str) -> T.Dict[str, str]:
     # search dates are in local time
     gcData = gc.get_blood_pressure(startdate=startdate, enddate=enddate)
 
@@ -1233,7 +1236,7 @@ def garmin_get_bp_measurements(gc: GC.Garmin, startdate: str, enddate: str):
     return gcMeasurements
 
 
-def garmin_get_weighins(gc: GC.Garmin, startdate: str, enddate: str):
+def garmin_get_weighins(gc: GC.Garmin, startdate: str, enddate: str) -> T.Dict[str, str]:
     # search dates are in local time
     gcData = gc.get_weigh_ins(startdate=startdate, enddate=enddate)
 
@@ -1355,7 +1358,7 @@ def _get_default_config_path() -> pathlib.Path:
     return xdg_path
 
 
-def _set_keyring_backend_env(_ctx, _param, value):
+def _set_keyring_backend_env(_ctx: click.Context, _param: T.Any, value: T.Optional[str]) -> T.Optional[str]:
     """Callback to set keyring backend environment variable"""
 
     if value:
@@ -1364,7 +1367,7 @@ def _set_keyring_backend_env(_ctx, _param, value):
     return value
 
 
-def _set_keyring_file_env(_ctx, _param, value):
+def _set_keyring_file_env(_ctx: click.Context, _param: T.Any, value: T.Optional[str]) -> T.Optional[str]:
     """Callback to set keyring file environment variable"""
 
     if value:
@@ -1409,13 +1412,12 @@ def _set_keyring_file_env(_ctx, _param, value):
     help="Enable debug logging (shows detailed HTTP traffic and internal operations)",
 )
 @click.pass_context
-def cli(ctx, config_path, debug):
+def cli(ctx: click.Context, config_path: click.Path, debug: bool):
     """Sync data from 'OMRON connect' to 'Garmin Connect'
 
     Global options must be specified BEFORE the command:
         omramin --debug sync --days 1
     """
-
     # Create config directory
     _config_path = str(config_path)
     pathlib.Path(_config_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1433,7 +1435,7 @@ def cli(ctx, config_path, debug):
 
 @cli.command(name="list")
 @click.pass_context
-def list_devices(ctx):
+def list_devices(ctx: click.Context):
     """List all configured devices."""
 
     config_path = ctx.obj["config_path"]
@@ -1497,7 +1499,7 @@ def list_devices(ctx):
 @click.option("--ble-filter", help="BLE device name filter", default=Options().ble_filter, show_default=True)
 @click.pass_context
 def add_device(
-    ctx,
+    ctx: click.Context,
     macaddr: T.Optional[str],
     name: T.Optional[str],
     category: T.Optional[OC.DeviceCategory],
@@ -1583,7 +1585,7 @@ def add_device(
 @cli.command(name="config")
 @click.argument("devname", required=True, type=str, nargs=1)
 @click.pass_context
-def edit_device(ctx, devname: str):
+def edit_device(ctx: click.Context, devname: str):
     """Edit device configuration."""
 
     config_path = ctx.obj["config_path"]
@@ -1622,7 +1624,7 @@ def edit_device(ctx, devname: str):
 @cli.command(name="remove")
 @click.argument("devname", required=True, type=str, nargs=1)
 @click.pass_context
-def remove_device(ctx, devname: str):
+def remove_device(ctx: click.Context, devname: str):
     """Remove a device by name or MAC address."""
 
     config_path = ctx.obj["config_path"]
@@ -1677,7 +1679,7 @@ def remove_device(ctx, devname: str):
 )
 @click.pass_context
 def sync_device(
-    ctx,
+    ctx: click.Context,
     devnames: T.List[str],
     device_category: T.Optional[str],
     days: int,

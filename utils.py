@@ -35,7 +35,7 @@ def strsimilar(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def sum_dict_value(d: T.Dict[T.Any, T.Any], key) -> T.Any:
+def sum_dict_value(d: T.Dict[T.Any, T.Any], key: T.Any) -> T.Any:
     return reduce(lambda a, b: a + b, map(lambda o: o[key], d))
 
 
@@ -118,13 +118,13 @@ def json_save(fname: T.Union[pathlib.Path, str], obj: T.Any) -> None:
         json.dump(obj, f, indent=4, sort_keys=False, cls=EnhancedJSONEncoder)
 
 
-def json_load(fname: T.Union[pathlib.Path, str], object_hook=None) -> T.Any:
+def json_load(fname: T.Union[pathlib.Path, str], object_hook: T.Optional[T.Callable] = None) -> T.Any:
     with open(fname, "r", encoding="utf-8") as f:
         return json5.load(f, object_hook=object_hook)
         # return json.load(f, object_hook=lambda d: types.SimpleNamespace(**d))
 
 
-def json_load_file(f: T.IO, object_hook=None) -> T.Any:
+def json_load_file(f: T.IO, object_hook: T.Optional[T.Callable] = None) -> T.Any:
     f.seek(0)
     return json5.load(f, object_hook=object_hook)
 
@@ -158,7 +158,7 @@ def utctimefromstr(dt: str) -> time:
     return utcdatetimefromstr(dt).time()
 
 
-def utcfromtimestamp_isoformat(timestamp, timespec="seconds") -> str:
+def utcfromtimestamp_isoformat(timestamp: float, timespec: str = "seconds") -> str:
     return utcfromtimestamp(timestamp).isoformat(timespec=timespec).replace("+00:00", "Z")
 
 

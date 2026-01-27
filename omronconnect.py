@@ -205,7 +205,7 @@ class BodyIndexList:
     unknown1: int
     measurementId: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for field in ["value", "subtype", "unknown1", "measurementId"]:
             object.__setattr__(self, field, int(getattr(self, field)))
 
@@ -225,7 +225,7 @@ class BPMeasurement:
     cuffWrapDetect: bool = True
     notes: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for field in ["systolic", "diastolic", "pulse", "measurementDate"]:
             object.__setattr__(self, field, int(getattr(self, field)))
 
@@ -249,7 +249,7 @@ class WeightMeasurement:
     metabolicAge: int = -1
     notes: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for field in [
             "weight",
             "bmiValue",
@@ -304,7 +304,7 @@ class OmronDevice:
     user: int = 1
     enabled: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.category, DeviceCategory):
             try:
                 object.__setattr__(self, "category", DeviceCategory.__members__[self.category.upper()])
@@ -321,7 +321,7 @@ class OmronDevice:
 ########################################################################################################################
 
 
-def _http_add_checksum(request: httpx.Request):
+def _http_add_checksum(request: httpx.Request) -> None:
     if request.method in ["POST", "DELETE"] and request.content:
         request.headers["Checksum"] = hashlib.sha256(request.content).hexdigest()
 
@@ -686,7 +686,7 @@ class OmronConnect2(OmronConnect):
     ) -> T.List[MeasurementTypes]:
         user = int(device.user)
 
-        def filter_measurements(data) -> T.List[MeasurementTypes]:
+        def filter_measurements(data: T.List[T.Dict[str, T.Any]]) -> T.List[MeasurementTypes]:
             r: T.List[MeasurementTypes] = []
             for m in data:
                 userNumberInDevice = int(m["userNumberInDevice"])
