@@ -691,6 +691,40 @@ def save_service_tokens(config_path: str, service: str, email: str, tokendata: s
         return False
 
 
+def clear_service_tokens(config_path: str, service: str, email: str) -> bool:
+    """Clear tokens for a service from keyring backend.
+
+    Args:
+        config_path: Path to configuration file
+        service: Service name ('garmin' or 'omron')
+        email: User email address
+
+    Returns:
+        True if tokens were found and cleared, False if no tokens existed
+    """
+
+    if not email:
+        L.error(f"Cannot clear {service} tokens: email not available")
+        return False
+
+    try:
+        backend = get_keyring_backend(config_path)
+        service_name, username = _keyring_id(service, email)
+
+        existing = backend.get_password(service_name, username)
+        if not existing:
+            L.debug(f"No {service} tokens found for {email}")
+            return False
+
+        backend.delete_password(service_name, username)
+        L.debug(f"Cleared {service} tokens for {email}")
+        return True
+
+    except Exception as e:  # pylint: disable=broad-except
+        L.error(f"Failed to clear {service} tokens: {e}")
+        return False
+
+
 def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
     """Login to OMRON connect"""
 
@@ -1418,6 +1452,7 @@ def cli(ctx: click.Context, config_path: click.Path, debug: bool):
     Global options must be specified BEFORE the command:
         omramin --debug sync --days 1
     """
+
     # Create config directory
     _config_path = str(config_path)
     pathlib.Path(_config_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1901,6 +1936,330 @@ def export_json(
             data.append(entry)
 
     U.json_save(output, data)
+
+
+########################################################################################################################
+# Garmin authentication commands
+########################################################################################################################
+
+
+@cli.group(name="garmin")
+@click.pass_context
+def garmin_group(_ctx: click.Context) -> None:
+    """Manage Garmin Connect authentication."""
+
+
+@garmin_group.command(name="login")
+@click.option("--email", help="Garmin email address")
+@click.option("--password", help="Garmin password (WARNING: exposes password in shell history)")
+@click.option("--is-cn", is_flag=True, default=None, help="Chinese account flag")
+@click.option("--force", is_flag=True, help="Force re-login even if tokens exist")
+@click.pass_context
+def garmin_login_cmd(ctx: click.Context, email: str, password: str, is_cn: bool, force: bool) -> None:
+    """Login to Garmin Connect and save authentication tokens.
+
+    By default, skips login if valid tokens already exist. Use --force to re-login.
+
+    Credential precedence: CLI option > Environment variable > config.json > interactive prompt
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    try:
+        config = U.json_load(config_path)
+
+    except FileNotFoundError:
+        config = DEFAULT_CONFIG.copy()
+
+    config = migrateconfig_path(config)
+    garminCfg = config.get("garmin", {})
+
+    # Get email from CLI, env, or config
+    final_email = email or _E("GARMIN_EMAIL") or garminCfg.get("email", "")
+
+    # Check if already logged in (unless --force)
+    if not force and final_email:
+        tokendata = load_service_tokens(config_path, "garmin", final_email, migrate_from_config=config)
+        if tokendata:
+            L.info(f"Already logged in as {final_email}. Use --force to re-login.")
+            return
+
+    # Set CLI options as env vars temporarily to give them precedence
+    original_env = {}
+    try:
+        if email:
+            original_env["GARMIN_EMAIL"] = os.environ.get("GARMIN_EMAIL")
+            os.environ["GARMIN_EMAIL"] = email
+
+        if password:
+            original_env["GARMIN_PASSWORD"] = os.environ.get("GARMIN_PASSWORD")
+            os.environ["GARMIN_PASSWORD"] = password
+
+        if is_cn is not None:
+            original_env["GARMIN_IS_CN"] = os.environ.get("GARMIN_IS_CN")
+            os.environ["GARMIN_IS_CN"] = "1" if is_cn else "0"
+
+        # Use existing login logic
+        gc = garmin_login(config_path)
+        if gc:
+            login_email = _E("GARMIN_EMAIL") or garminCfg.get("email", "")
+            L.info(f"Successfully logged in to Garmin as {login_email}")
+
+        else:
+            L.error("Failed to login to Garmin")
+
+    except LoginError as e:
+        L.error(f"Garmin login failed: {e}")
+
+    finally:
+        # Restore original environment
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+
+            else:
+                os.environ[key] = value
+
+
+@garmin_group.command(name="logout")
+@click.option("--email", help="Email address (default: from config)")
+@click.option("--clear-config", is_flag=True, help="Also clear email/is_cn from config")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def garmin_logout_cmd(ctx: click.Context, email: str, clear_config: bool, yes: bool) -> None:
+    """Logout from Garmin Connect by clearing authentication tokens.
+
+    By default, only clears tokens (keeps config entries). Use --clear-config to also remove
+    email/is_cn from config file.
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    # Get email from option or config
+    if not email:
+        try:
+            config = U.json_load(config_path)
+            config = migrateconfig_path(config)
+            garminCfg = config.get("garmin", {})
+            email = garminCfg.get("email", "")
+
+        except FileNotFoundError:
+            pass
+
+    if not email:
+        L.error("Cannot logout: email not found in config and --email not provided")
+        return
+
+    # Confirmation prompt
+    if not yes:
+        action = "clear tokens and config entries" if clear_config else "clear tokens"
+        click.echo(f"Logout from Garmin Connect ({email}): {action}")
+        if not click.confirm("Continue?", default=False):
+            L.info("Logout cancelled")
+            return
+
+    # Clear tokens
+    tokens_cleared = clear_service_tokens(config_path, "garmin", email)
+    if tokens_cleared:
+        L.info(f"Cleared Garmin tokens for {email}")
+
+    else:
+        L.info(f"No Garmin tokens found for {email}")
+
+    # Clear config if requested
+    if clear_config:
+        try:
+            config = U.json_load(config_path)
+            config = migrateconfig_path(config)
+
+            if "garmin" in config:
+                garminCfg = config["garmin"]
+                removed = []
+                for key in ["email", "is_cn"]:
+                    if key in garminCfg:
+                        del garminCfg[key]
+                        removed.append(key)
+
+                if removed:
+                    with config_write_handler(config_path, config):
+                        pass  # config_write_handler saves automatically
+
+                    L.info(f"Removed from config: {', '.join(removed)}")
+
+                else:
+                    L.info("No Garmin config entries to remove")
+
+            else:
+                L.info("No Garmin config section found")
+
+        except FileNotFoundError:
+            L.info("No config file found, nothing to clear")
+
+        except (OSError, IOError, PermissionError) as e:
+            L.warning(f"Config file is read-only, cannot clear config entries: {e}")
+            L.info("Tokens were cleared successfully")
+
+
+########################################################################################################################
+# OMRON authentication commands
+########################################################################################################################
+
+
+@cli.group(name="omron")
+@click.pass_context
+def omron_group(_ctx: click.Context):
+    """Manage OMRON Connect authentication."""
+
+
+@omron_group.command(name="login")
+@click.option("--email", help="OMRON email address")
+@click.option("--password", help="OMRON password (WARNING: exposes password in shell history)")
+@click.option("--country", help="Country code (e.g., 'US')")
+@click.option("--force", is_flag=True, help="Force re-login even if tokens exist")
+@click.pass_context
+def omron_login_cmd(ctx: click.Context, email: str, password: str, country: str, force: bool):
+    """Login to OMRON Connect and save authentication tokens.
+
+    By default, skips login if valid tokens already exist. Use --force to re-login.
+
+    Credential precedence: CLI option > Environment variable > config.json > interactive prompt
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    try:
+        config = U.json_load(config_path)
+
+    except FileNotFoundError:
+        config = DEFAULT_CONFIG.copy()
+
+    config = migrateconfig_path(config)
+    ocCfg = config.get("omron", {})
+
+    # Get email from CLI, env, or config (support legacy "username" field)
+    final_email = email or _E("OMRON_EMAIL") or ocCfg.get("email", "") or ocCfg.get("username", "")
+
+    # Check if already logged in (unless --force)
+    if not force and final_email:
+        tokendata = load_service_tokens(config_path, "omron", final_email, migrate_from_config=config)
+        if tokendata:
+            L.info(f"Already logged in as {final_email}. Use --force to re-login.")
+            return
+
+    # Set CLI options as env vars temporarily to give them precedence
+    original_env = {}
+    try:
+        if email:
+            original_env["OMRON_EMAIL"] = os.environ.get("OMRON_EMAIL")
+            os.environ["OMRON_EMAIL"] = email
+
+        if password:
+            original_env["OMRON_PASSWORD"] = os.environ.get("OMRON_PASSWORD")
+            os.environ["OMRON_PASSWORD"] = password
+
+        if country:
+            original_env["OMRON_COUNTRY"] = os.environ.get("OMRON_COUNTRY")
+            os.environ["OMRON_COUNTRY"] = country
+
+        # Use existing login logic
+        oc = omron_login(config_path)
+        if oc:
+            login_email = _E("OMRON_EMAIL") or ocCfg.get("email", "") or ocCfg.get("username", "")
+            L.info(f"Successfully logged in to OMRON as {login_email}")
+
+        else:
+            L.error("Failed to login to OMRON")
+
+    except LoginError as e:
+        L.error(f"OMRON login failed: {e}")
+
+    finally:
+        # Restore original environment
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+
+            else:
+                os.environ[key] = value
+
+
+@omron_group.command(name="logout")
+@click.option("--email", help="Email address (default: from config)")
+@click.option("--clear-config", is_flag=True, help="Also clear email/country from config")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def omron_logout_cmd(ctx: click.Context, email: str, clear_config: bool, yes: bool) -> None:
+    """Logout from OMRON Connect by clearing authentication tokens.
+
+    By default, only clears tokens (keeps config entries). Use --clear-config to also remove
+    email/country from config file.
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    # Get email from option or config
+    if not email:
+        try:
+            config = U.json_load(config_path)
+            config = migrateconfig_path(config)
+            ocCfg = config.get("omron", {})
+            email = ocCfg.get("email", "") or ocCfg.get("username", "")
+
+        except FileNotFoundError:
+            pass
+
+    if not email:
+        L.error("Cannot logout: email not found in config and --email not provided")
+        return
+
+    # Confirmation prompt
+    if not yes:
+        action = "clear tokens and config entries" if clear_config else "clear tokens"
+        click.echo(f"Logout from OMRON Connect ({email}): {action}")
+        if not click.confirm("Continue?", default=False):
+            L.info("Logout cancelled")
+            return
+
+    # Clear tokens
+    tokens_cleared = clear_service_tokens(config_path, "omron", email)
+    if tokens_cleared:
+        L.info(f"Cleared OMRON tokens for {email}")
+
+    else:
+        L.info(f"No OMRON tokens found for {email}")
+
+    # Clear config if requested
+    if clear_config:
+        try:
+            config = U.json_load(config_path)
+            config = migrateconfig_path(config)
+
+            if "omron" in config:
+                ocCfg = config["omron"]
+                removed = []
+                for key in ["email", "username", "country"]:
+                    if key in ocCfg:
+                        del ocCfg[key]
+                        removed.append(key)
+
+                if removed:
+                    with config_write_handler(config_path, config):
+                        pass  # config_write_handler saves automatically
+
+                    L.info(f"Removed from config: {', '.join(removed)}")
+
+                else:
+                    L.info("No OMRON config entries to remove")
+
+            else:
+                L.info("No OMRON config section found")
+
+        except FileNotFoundError:
+            L.info("No config file found, nothing to clear")
+
+        except (OSError, IOError, PermissionError) as e:
+            L.warning(f"Config file is read-only, cannot clear config entries: {e}")
+            L.info("Tokens were cleared successfully")
 
 
 ########################################################################################################################
