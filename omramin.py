@@ -29,6 +29,7 @@ import logging.config
 import os
 import pathlib
 import platform
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import cache
@@ -2306,6 +2307,408 @@ def omron_list_devices_cmd(ctx: click.Context) -> None:
 
     except Exception as e:  # pylint: disable=broad-except
         L.error(f"Failed to fetch devices: {e}")
+
+
+########################################################################################################################
+# Init command - Interactive setup wizard
+########################################################################################################################
+
+
+@cli.command(name="init")
+@click.option("--skip-garmin", is_flag=True, help="Skip Garmin Connect authentication")
+@click.option("--skip-omron", is_flag=True, help="Skip OMRON Connect authentication")
+@click.option("--skip-devices", is_flag=True, help="Skip device discovery/selection")
+@click.option(
+    "--discovery-method",
+    type=click.Choice(["api", "ble", "ask"], case_sensitive=False),
+    default="ask",
+    help="Device discovery method (default: ask)",
+)
+@click.option("--ble-filter", help="BLE device name filter", default=Options().ble_filter, show_default=True)
+@click.pass_context
+def init_cmd(
+    ctx: click.Context,
+    skip_garmin: bool,
+    skip_omron: bool,
+    skip_devices: bool,
+    discovery_method: str,
+    ble_filter: str,
+) -> None:
+    """Initialize omramin: setup authentication and discover devices.
+
+    \b
+    This interactive wizard guides you through:
+      1. Authenticating with Garmin Connect
+      2. Authenticating with OMRON Connect
+      3. Discovering and configuring your devices
+
+    \b
+    Use --skip-* options to skip specific steps.
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    # Welcome banner
+    click.echo()
+    click.echo("=" * 60)
+    click.echo("Welcome to omramin initialization!")
+    click.echo("=" * 60)
+    click.echo()
+    click.echo("This will guide you through:")
+    click.echo("  1. Authenticating with Garmin Connect")
+    click.echo("  2. Authenticating with OMRON Connect")
+    click.echo("  3. Discovering and configuring your devices")
+    click.echo()
+
+    # Create temp config file for this session
+    temp_fd, temp_config_path = tempfile.mkstemp(suffix=".json", prefix="omramin-init-")
+    os.close(temp_fd)
+
+    # Load existing config or start with defaults
+    try:
+        config = U.json_load(config_path)
+
+    except FileNotFoundError:
+        config = DEFAULT_CONFIG.copy()
+
+    config = migrateconfig_path(config)
+
+    # Write initial state to temp config
+    U.json_save(temp_config_path, config)
+
+    # Track what was accomplished for summary
+    @dataclasses.dataclass
+    class Summary:
+        garmin_email: T.Optional[str] = None
+        garmin_status: T.Optional[bool] = None
+        omron_email: T.Optional[str] = None
+        omron_country: T.Optional[str] = None
+        omron_status: T.Optional[bool] = None
+        devices_added: list[dict[str, T.Any]] = dataclasses.field(default_factory=list)
+
+    summary = Summary()
+
+    # Step 1: Garmin Authentication
+    if not skip_garmin:
+        click.echo("=" * 60)
+        click.echo("Step 1: Garmin Connect Authentication")
+        click.echo("=" * 60)
+        click.echo()
+
+        try:
+            garmin_login(temp_config_path)
+            config = U.json_load(temp_config_path)
+
+            garminCfg = config.get("garmin", {})
+            summary.garmin_email = garminCfg.get("email", "unknown")
+            summary.garmin_status = True
+            click.echo()
+
+        except Exception as e:  # pylint: disable=broad-except
+            L.error(f"Garmin authentication failed: {e}")
+            click.echo()
+            if not click.confirm("Continue without Garmin Connect?", default=True):
+                L.info("Setup cancelled")
+                return
+
+            summary.garmin_status = False
+
+    else:
+        L.info("Skipping Garmin Connect authentication (--skip-garmin)")
+        click.echo()
+
+    # Step 2: OMRON Authentication
+    oc: T.Optional[OC.OmronClient] = None
+    if not skip_omron:
+        click.echo("=" * 60)
+        click.echo("Step 2: OMRON Connect Authentication")
+        click.echo("=" * 60)
+        click.echo()
+
+        try:
+            oc = omron_login(temp_config_path)
+            config = U.json_load(temp_config_path)
+
+            omronCfg = config.get("omron", {})
+            summary.omron_email = omronCfg.get("email", "unknown")
+            summary.omron_country = omronCfg.get("country", "unknown")
+            summary.omron_status = True
+            click.echo()
+
+        except Exception as e:  # pylint: disable=broad-except
+            L.error(f"OMRON authentication failed: {e}")
+            click.echo()
+            if not click.confirm("Continue without OMRON Connect?", default=True):
+                L.info("Setup cancelled")
+                return
+
+            summary.omron_status = False
+
+    else:
+        L.info("Skipping OMRON Connect authentication (--skip-omron)")
+        click.echo()
+
+    # Step 3: Device Discovery
+    if not skip_devices:
+        if not summary.omron_status or oc is None:
+            L.warning("Cannot discover devices without OMRON authentication")
+            L.info("You can add devices later with 'omramin add'")
+
+        else:
+            click.echo("=" * 60)
+            click.echo("Step 3: Device Discovery")
+            click.echo("=" * 60)
+            click.echo()
+
+            # Determine discovery method
+            method: str | None = discovery_method.lower()
+            if method == "ask":
+                questions = [
+                    inquirer.List(
+                        "method",
+                        message="How would you like to discover devices?",
+                        choices=[
+                            ("Fetch from OMRON Connect (recommended)", "api"),
+                            ("Scan via Bluetooth", "ble"),
+                        ],
+                        default="api",
+                    )
+                ]
+                answers = inquirer.prompt(questions)
+                if not answers:
+                    L.info("Device discovery cancelled")
+                    method = None
+
+                else:
+                    method = answers["method"]
+
+            discoveredDevices: T.List[DeviceType] = []
+
+            # API Discovery
+            if method == "api":
+                try:
+                    click.echo()
+                    L.info("Fetching devices from OMRON Connect...")
+                    apiDevices = oc.get_registered_devices()
+
+                    if not apiDevices:
+                        L.info("No devices found in your OMRON account")
+                        click.echo()
+                        if click.confirm("Would you like to scan via Bluetooth instead?", default=True):
+                            method = "ble"
+
+                    else:
+                        L.info(f"Found {len(apiDevices)} device(s) from API")
+
+                        existingDevices = config.get("omron", {}).get("devices", [])
+                        existingMacs = {d["macaddr"] for d in existingDevices}
+
+                        apiDevicesDict = [d.to_dict() for d in apiDevices]
+                        apiMacs = {d["macaddr"] for d in apiDevicesDict}
+
+                        allDevices: T.List[DeviceType] = []
+                        defaultSelected: T.List[int] = []
+
+                        for device in apiDevicesDict:
+                            allDevices.append(device)
+                            # Check ALL API devices
+                            defaultSelected.append(len(allDevices) - 1)
+
+                        # Add devices from config that are NOT in API (unchecked by default)
+                        # These are likely old/removed devices
+                        for device in existingDevices:
+                            if device["macaddr"] not in apiMacs:
+                                allDevices.append(device)
+
+                        if not allDevices:
+                            L.info("No devices found")
+
+                        else:
+                            L.info(f"Found {len(existingDevices)} device(s) in current config")
+                            click.echo()
+
+                            choices = []
+                            for i, d in enumerate(allDevices):
+                                isExisting = d["macaddr"] in existingMacs
+                                inApi = d["macaddr"] in apiMacs
+
+                                prefix = "+ "
+                                if not inApi:
+                                    prefix = "- "
+
+                                elif isExisting:
+                                    prefix = "= "
+
+                                label = f"{prefix}{d['name']} ({d['category']}) - {d['macaddr']}"
+                                choices.append((label, i))
+
+                                # API devices checked, old config-only devices unchecked
+                                questions = [
+                                    inquirer.Checkbox(
+                                        "selected",
+                                        message=(
+                                            "Select devices to add/keep/remove in config "
+                                            "(space to toggle, enter to confirm)"
+                                        ),
+                                        choices=choices,
+                                        default=defaultSelected,
+                                    )
+                                ]
+
+                            answers = inquirer.prompt(questions)
+                            if not answers:
+                                L.info("Device selection cancelled")
+
+                            elif not answers["selected"]:
+                                L.info("No devices selected")
+
+                            else:
+                                discoveredDevices = [allDevices[i] for i in answers["selected"]]
+
+                except Exception as e:  # pylint: disable=broad-except
+                    L.error(f"API device fetch failed: {e}")
+                    click.echo()
+                    if click.confirm("Would you like to try Bluetooth scanning instead?", default=True):
+                        method = "ble"
+
+            # BLE Discovery (fallback or explicit)
+            if method == "ble":
+                try:
+                    click.echo()
+                    opts = Options(ble_filter=ble_filter)
+                    devices = config.get("omron", {}).get("devices", [])
+                    macAddrs = [d["macaddr"] for d in devices]
+                    bleDevices = omron_ble_scan(macAddrs, opts)
+
+                    if not bleDevices:
+                        L.info("No new devices found via Bluetooth")
+
+                    else:
+                        for mac in bleDevices:
+                            newDevice = device_new(
+                                macaddr=mac,
+                                name=None,
+                                category=None,
+                                user=None,
+                                enabled=None,
+                            )
+                            if newDevice:
+                                discoveredDevices.append(newDevice)
+
+                except Exception as e:  # pylint: disable=broad-except
+                    L.error(f"Bluetooth scanning failed: {e}")
+
+            # Save devices to config
+            if discoveredDevices:
+                click.echo()
+
+                if "omron" not in config:
+                    config["omron"] = {"devices": []}
+
+                if "devices" not in config["omron"]:
+                    config["omron"]["devices"] = []
+
+                # API gets complete list vs. BLE only currently available devices
+                # API path: REPLACE entire device list
+                # BLE path: MERGE with existing devices
+                if method == "api":
+                    L.info(f"Configuring {len(discoveredDevices)} device(s)...")
+                    config["omron"]["devices"] = discoveredDevices
+
+                else:
+                    L.info(f"Adding {len(discoveredDevices)} device(s)...")
+                    config["omron"]["devices"].extend(discoveredDevices)
+
+                summary.devices_added = [{"name": d["name"], "category": d["category"]} for d in discoveredDevices]
+
+                try:
+                    U.json_save(temp_config_path, config)
+                    L.info("Configuration saved to temp")
+
+                except (OSError, IOError, PermissionError) as e:
+                    L.error(f"Failed to save configuration: {e}")
+                    L.info("You may need to edit the config file manually")
+
+    else:
+        L.info("Skipping device discovery (--skip-devices)")
+        click.echo()
+
+    # Determine if setup was completed or cancelled
+    setup_complete = (
+        (summary.garmin_status is not False)
+        and (summary.omron_status is not False)
+        and (skip_devices or summary.devices_added or not summary.omron_status)
+    )
+
+    # Summary
+    click.echo()
+    click.echo("=" * 60)
+    click.echo("Setup Complete" if setup_complete else "Setup Cancelled")
+    click.echo("=" * 60)
+    click.echo()
+    click.echo("Summary:")
+
+    # Garmin status
+    if summary.garmin_status is True:
+        click.echo(f"  Garmin:  authenticated ({summary.garmin_email})")
+
+    elif summary.garmin_status is False:
+        click.echo("  Garmin:  authentication failed")
+
+    else:
+        click.echo("  Garmin:  skipped")
+
+    # OMRON status
+    if summary.omron_status is True:
+        click.echo(f"  OMRON:   authenticated ({summary.omron_email}, {summary.omron_country})")
+
+    elif summary.omron_status is False:
+        click.echo("  OMRON:   authentication failed")
+
+    else:
+        click.echo("  OMRON:   skipped")
+
+    # Devices status
+    if summary.devices_added:
+        click.echo(f"  Devices: {len(summary.devices_added)} device(s) configured")
+        for device in summary.devices_added:
+            click.echo(f"    - {device['name']} ({device['category']})")
+
+    else:
+        click.echo("  Devices: none configured")
+
+    # Next steps
+    if summary.devices_added:
+        click.echo()
+        click.echo("Next steps:")
+        click.echo("  - Run 'omramin sync --days 7' to sync measurements")
+        click.echo("  - Run 'omramin list' to see configured devices")
+
+    elif summary.omron_status:
+        click.echo()
+        click.echo("Next steps:")
+        click.echo("  - Run 'omramin add' to add devices")
+        click.echo("  - Run 'omramin list' to see configured devices")
+
+    # Merge temp config to final if setup completed
+    if setup_complete:
+        try:
+            temp_config = U.json_load(temp_config_path)
+            with config_write_handler(config_path, temp_config):
+                pass
+
+            L.info("Configuration saved successfully")
+
+        except Exception as e:  # pylint: disable=broad-except
+            L.error(f"Failed to save final configuration: {e}")
+
+    try:
+        os.unlink(temp_config_path)
+
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    click.echo()
 
 
 ########################################################################################################################

@@ -10,7 +10,7 @@ import logging
 import re
 import zlib
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import httpx
 import pytz
@@ -322,6 +322,11 @@ class OmronDevice:
     @property
     def serial(self) -> str:
         return ble_mac_to_serial(self.macaddr)
+
+    def to_dict(self) -> dict:
+        result = asdict(self)
+        result["category"] = self.category.name
+        return result
 
 
 ########################################################################################################################
