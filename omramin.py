@@ -2,7 +2,6 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "bleak>=0.22.3",
 #   "click>=8.1.7",
 #   "garminconnect>=0.2.25",
 #   "garth>=0.5.21; python_version>='3.14'",
@@ -16,6 +15,7 @@
 # ]
 # ///
 ########################################################################################################################
+# pylint: disable=too-many-lines
 
 import typing as T  # isort: split
 
@@ -34,7 +34,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import cache
 
-import bleak
 import click
 import garminconnect as GC
 import garth
@@ -908,6 +907,16 @@ def config_write_handler(config_path: str, config: dict) -> T.Generator[dict, No
 def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
     """Scan for Omron devices in pairing mode"""
 
+    # Lazy import - only fail if BLE scanning is actually used
+    try:
+        # pylint: disable-next=import-outside-toplevel
+        import bleak
+
+    except ImportError as e:
+        raise ImportError(
+            "Bluetooth scanning requires 'bleak' package. Install with: pip install 'omramin[bluetooth]'"
+        ) from e
+
     devsFound: T.Dict[str, str] = {}
 
     async def scan() -> None:
@@ -1579,7 +1588,16 @@ def add_device(
 
     if not macaddr:
         macAddrs = [d["macaddr"] for d in devices]
-        bleDevices = omron_ble_scan(macAddrs, opts)
+
+        try:
+            bleDevices = omron_ble_scan(macAddrs, opts)
+
+        except ImportError as e:
+            L.error(str(e))
+            L.info("Alternative: Add device manually with MAC address")
+            L.info("Example: omramin add --macaddr 00:11:22:33:44:55")
+            return
+
         if not bleDevices:
             L.info("No devices found.")
             return
@@ -2594,6 +2612,11 @@ def init_cmd(
                             )
                             if newDevice:
                                 discoveredDevices.append(newDevice)
+
+                except ImportError as e:
+                    L.error(str(e))
+                    L.info("Alternative: Use API discovery method instead")
+                    L.info("Run: omramin init --discovery-method api")
 
                 except Exception as e:  # pylint: disable=broad-except
                     L.error(f"Bluetooth scanning failed: {e}")
