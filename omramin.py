@@ -655,6 +655,17 @@ def load_service_tokens(
             if save_service_tokens(config_path, service, email, tokendata):
                 L.info(f"Migrated {service} tokens from {CONFIG_FILENAME}")
 
+                # Clean up obsolete tokendata from config
+                del service_cfg["tokendata"]
+                try:
+                    U.json_save(config_path, migrate_from_config)
+                    L.debug(f"Removed obsolete {service} tokendata from {CONFIG_FILENAME}")
+
+                except Exception as e:  # pylint: disable=broad-except
+                    # Log warning but don't fail - tokens ARE in keyring (primary goal)
+                    L.warning(f"Could not remove obsolete {service} tokendata from config: {e}")
+                    L.warning("Consider manually removing it or making config writable")
+
             return tokendata
 
     L.debug(f"No {service} tokens found")
