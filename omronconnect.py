@@ -11,6 +11,7 @@ import re
 import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 
 import httpx
 import pytz
@@ -199,14 +200,14 @@ class DeviceCategory(enum.StrEnum):
 
 
 @dataclass(frozen=True, kw_only=False)
-class BodyIndexList:
+class BodyIndexListItem:
     value: int
     subtype: int
-    unknown1: int
+    scale: int
     measurementId: int
 
     def __post_init__(self) -> None:
-        for field in ["value", "subtype", "unknown1", "measurementId"]:
+        for field in ["value", "subtype", "scale", "measurementId"]:
             object.__setattr__(self, field, int(getattr(self, field)))
 
 
@@ -297,6 +298,24 @@ def convert_weight_to_kg(weight: T.Union[int, float], unit: int) -> float:
         return weight * 6.35029318
 
     return weight
+
+
+@T.overload
+def convert_data_util(value: int, scale: int, _type: type[int]) -> int: ...
+
+
+@T.overload
+def convert_data_util(value: int, scale: int, _type: type[float] = float) -> float: ...
+
+
+def convert_data_util(value: int, scale: int, _type: T.Callable[[Decimal], T.Any] = float) -> T.Any:
+    if scale < 0:
+        factor = Decimal("0.1") ** (-scale)
+
+    else:
+        factor = Decimal(10) ** scale
+
+    return _type(Decimal(value) * factor)
 
 
 ########################################################################################################################
@@ -583,10 +602,22 @@ class OmronConnect1(OmronConnect):
     def _process_bpm_measurements(self, dev: T.Dict[str, T.Any]) -> T.List[BPMeasurement]:
         measurements: T.List[BPMeasurement] = []
         for m in dev["measureList"]:
-            bodyIndexList = {k: BodyIndexList(*v) for k, v in m["bodyIndexList"].items()}
-            systolic = bodyIndexList[ValueType.MMHG_MAX_FIGURE].value
-            diastolic = bodyIndexList[ValueType.MMHG_MIN_FIGURE].value
-            pulse = bodyIndexList[ValueType.BPM_FIGURE].value
+            bodyIndexList = {k: BodyIndexListItem(*v) for k, v in m["bodyIndexList"].items()}
+            systolic = convert_data_util(
+                bodyIndexList[ValueType.MMHG_MAX_FIGURE].value,
+                bodyIndexList[ValueType.MMHG_MAX_FIGURE].scale,
+                int,
+            )
+            diastolic = convert_data_util(
+                bodyIndexList[ValueType.MMHG_MIN_FIGURE].value,
+                bodyIndexList[ValueType.MMHG_MIN_FIGURE].scale,
+                int,
+            )
+            pulse = convert_data_util(
+                bodyIndexList[ValueType.BPM_FIGURE].value,
+                bodyIndexList[ValueType.BPM_FIGURE].scale,
+                int,
+            )
             bodymotion = bodyIndexList[ValueType.BODY_MOTION_FLAG_FIGURE].value
             irregHB = bodyIndexList[ValueType.ARRHYTHMIA_FLAG_FIGURE].value
             cuffWrapGuid = bodyIndexList[ValueType.KEEP_UP_CHECK_FIGURE].value
@@ -609,16 +640,36 @@ class OmronConnect1(OmronConnect):
     def _process_scale_measurements(self, dev: T.Dict[str, T.Any]) -> T.List[WeightMeasurement]:
         measurements: T.List[WeightMeasurement] = []
         for m in dev["measureList"]:
-            bodyIndexList = {k: BodyIndexList(*v) for k, v in m["bodyIndexList"].items()}
-            weight = bodyIndexList[ValueType.KG_FIGURE].value / 100
-            weightUnit = bodyIndexList[ValueType.KG_FIGURE].subtype
+            bodyIndexList = {k: BodyIndexListItem(*v) for k, v in m["bodyIndexList"].items()}
+            weight_entry = bodyIndexList[ValueType.KG_FIGURE]
+            weight = convert_data_util(weight_entry.value, weight_entry.scale)
+            weightUnit = weight_entry.subtype
             weight = convert_weight_to_kg(weight, weightUnit)
-            bodyFatPercentage = bodyIndexList[ValueType.BODY_FAT_PER_FIGURE].value / 10
-            skeletalMusclePercentage = bodyIndexList[ValueType.RATE_SKELETAL_MUSCLE_FIGURE].value / 10
-            basal_met = bodyIndexList[ValueType.BASAL_METABOLISM_FIGURE].value
-            metabolic_age = bodyIndexList[ValueType.BIOLOGICAL_AGE_FIGURE].value
-            visceral_fat_rating = bodyIndexList[ValueType.VISCERAL_FAT_FIGURE].value / 10
-            bmi = bodyIndexList[ValueType.BMI_FIGURE].value / 10
+            bodyFatPercentage = convert_data_util(
+                bodyIndexList[ValueType.BODY_FAT_PER_FIGURE].value,
+                bodyIndexList[ValueType.BODY_FAT_PER_FIGURE].scale,
+            )
+            skeletalMusclePercentage = convert_data_util(
+                bodyIndexList[ValueType.RATE_SKELETAL_MUSCLE_FIGURE].value,
+                bodyIndexList[ValueType.RATE_SKELETAL_MUSCLE_FIGURE].scale,
+            )
+            basal_met = convert_data_util(
+                bodyIndexList[ValueType.BASAL_METABOLISM_FIGURE].value,
+                bodyIndexList[ValueType.BASAL_METABOLISM_FIGURE].scale,
+            )
+            metabolic_age = convert_data_util(
+                bodyIndexList[ValueType.BIOLOGICAL_AGE_FIGURE].value,
+                bodyIndexList[ValueType.BIOLOGICAL_AGE_FIGURE].scale,
+                int,
+            )
+            visceral_fat_rating = convert_data_util(
+                bodyIndexList[ValueType.VISCERAL_FAT_FIGURE].value,
+                bodyIndexList[ValueType.VISCERAL_FAT_FIGURE].scale,
+            )
+            bmi = convert_data_util(
+                bodyIndexList[ValueType.BMI_FIGURE].value,
+                bodyIndexList[ValueType.BMI_FIGURE].scale,
+            )
             timeZone = pytz.timezone(m["timeZone"])
 
             wm = WeightMeasurement(
