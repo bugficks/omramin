@@ -39,6 +39,7 @@ import garminconnect as GC
 import garth
 import inquirer
 import keyring
+from dateutil import parser as dateutil_parser
 from httpx import HTTPStatusError
 
 import omronconnect as OC
@@ -1355,6 +1356,90 @@ def calculate_date_range(days: int) -> T.Tuple[int, int]:
     return int(startLocal), int(endLocal)
 
 
+def parse_date_string(date_str: str) -> datetime:
+    """Parse flexible date formats (yyyymmdd, yyyy-mm-dd, etc.) to datetime at midnight."""
+
+    try:
+        parsed_date = dateutil_parser.parse(date_str)
+        return datetime.combine(parsed_date.date(), datetime.min.time())
+
+    except (ValueError, TypeError, dateutil_parser.ParserError) as e:
+        raise ValueError(
+            f"Invalid date format: '{date_str}'. Expected formats: yyyymmdd, yyyy-mm-dd, yyyy/mm/dd, etc. Error: {e}"
+        ) from e
+
+
+def calculate_date_range_from_options(
+    *,
+    from_date: T.Optional[str] = None,
+    to_date: T.Optional[str] = None,
+    days: T.Optional[int] = None,
+) -> T.Tuple[int, int]:
+    """Calculate date range supporting --from/--to/--days combinations. Future dates clamped to today."""
+
+    if from_date and to_date and days is not None:
+        raise DateRangeException(
+            "Cannot specify all three options (--from, --to, --days) together. "
+            "Use --from with --to, --from with --days, or --to with --days."
+        )
+
+    today_end = datetime.combine(datetime.today().date(), datetime.max.time())
+    today_start = datetime.combine(datetime.today().date(), datetime.min.time())
+
+    # Pattern 1: --from DATE --to DATE (explicit range)
+    if from_date and to_date:
+        start = parse_date_string(from_date)
+        end = parse_date_string(to_date)
+        end = datetime.combine(end.date(), datetime.max.time())
+
+    # Pattern 2: --from DATE --days N (start date plus N days)
+    elif from_date and days is not None:
+        days = max(days, 0)
+        start = parse_date_string(from_date)
+        end = start + timedelta(days=days)
+        end = datetime.combine(end.date(), datetime.max.time())
+
+    # Pattern 3: --to DATE --days N (end date minus N days)
+    elif to_date and days is not None:
+        days = max(days, 0)
+        end = parse_date_string(to_date)
+        end = datetime.combine(end.date(), datetime.max.time())
+        start = end - timedelta(days=days)
+        start = datetime.combine(start.date(), datetime.min.time())
+
+    # Pattern 4: --days N only (backward compatibility)
+    elif days is not None:
+        return calculate_date_range(days)
+
+    # Pattern 5: --from DATE only (from date to today)
+    elif from_date:
+        start = parse_date_string(from_date)
+        end = today_end
+
+    # Pattern 6: --to DATE only (single day on specified date)
+    elif to_date:
+        date = parse_date_string(to_date)
+        start = datetime.combine(date.date(), datetime.min.time())
+        end = datetime.combine(date.date(), datetime.max.time())
+
+    else:
+        start = today_start
+        end = today_end
+
+    end = min(end, today_end)
+    start = min(start, today_start)
+
+    startLocal = int(start.timestamp())
+    endLocal = int(end.timestamp())
+
+    if endLocal - startLocal <= 0:
+        raise DateRangeException(
+            f"Invalid date range: start date must be before end date. Start: {start.date()}, End: {end.date()}"
+        )
+
+    return startLocal, endLocal
+
+
 def filter_devices(
     devices: T.List[T.Dict[str, T.Any]],
     *,
@@ -1791,7 +1876,21 @@ def remove_device(ctx: click.Context, devname: str):
     required=False,
     type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
 )
-@click.option("--days", default=0, show_default=True, type=click.INT, help="Number of days to sync from today.")
+@click.option("--days", default=None, type=click.INT, help="Number of days. Can combine with --from or --to.")
+@click.option(
+    "--from",
+    "from_date",
+    type=click.STRING,
+    default=None,
+    help="Start date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --to.",
+)
+@click.option(
+    "--to",
+    "to_date",
+    type=click.STRING,
+    default=None,
+    help="End date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --from.",
+)
 @click.option(
     "--overwrite", is_flag=True, default=Options().overwrite, show_default=True, help="Overwrite existing measurements."
 )
@@ -1808,7 +1907,9 @@ def sync_device(
     ctx: click.Context,
     devnames: T.List[str],
     device_category: T.Optional[str],
-    days: int,
+    days: T.Optional[int],
+    from_date: T.Optional[str],
+    to_date: T.Optional[str],
     overwrite: bool,
     no_write: bool,
 ):
@@ -1818,14 +1919,36 @@ def sync_device(
     DEVNAMES: List of Names or MAC addresses for the device to sync. [default: ALL]
 
     \b
+    Date Range Options:
+        --days N              Sync last N days from today (default: 0, today only)
+        --from DATE           Start date (yyyymmdd or yyyy-mm-dd format)
+        --to DATE             End date (yyyymmdd or yyyy-mm-dd format)
+        --from DATE --to DATE Explicit date range
+        --from DATE --days N  Start date plus N days
+        --to DATE --days N    End date minus N days
+
+    \b
     Examples:
+        # Sync all devices for today only
+        omramin sync
+    \b
         # Sync all devices for the last 7 days
-        python omramin.py sync --days 7
+        omramin sync --days 7
     \b
         # Sync a specific device for the last 1 day
-        python omramin.py sync "my scale" --days 1
-    or
-        python omramin.py sync 00:11:22:33:44:55 "my scale" --days 1
+        omramin sync "my scale" --days 1
+    \b
+        # Sync with explicit date range
+        omramin sync --from 20240101 --to 20240131
+    \b
+        # Sync with separators in date format
+        omramin sync --from 2024-01-01 --to 2024-01-31
+    \b
+        # Start date plus 7 days
+        omramin sync --from 20240101 --days 7
+    \b
+        # End date minus 7 days
+        omramin sync --to 20240131 --days 7
     """
 
     config_path = ctx.obj["config_path"]
@@ -1848,11 +1971,23 @@ def sync_device(
         L.info("No devices configured.")
         return
 
-    try:
-        startLocal, endLocal = calculate_date_range(days)
+    # Default to 0 days if no date options provided
+    if days is None and from_date is None and to_date is None:
+        days = 0
 
-    except DateRangeException:
-        L.info("Invalid date range")
+    try:
+        startLocal, endLocal = calculate_date_range_from_options(
+            from_date=from_date,
+            to_date=to_date,
+            days=days,
+        )
+
+    except DateRangeException as e:
+        L.error(f"Invalid date range: {e}")
+        return
+
+    except ValueError as e:
+        L.error(f"Date parsing error: {e}")
         return
 
     # filter devices by enabled, category and name/mac address
@@ -1897,7 +2032,21 @@ def sync_device(
     required=True,
     type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
 )
-@click.option("--days", default=0, show_default=True, type=click.INT, help="Number of days to sync from today.")
+@click.option("--days", default=None, type=click.INT, help="Number of days. Can combine with --from or --to.")
+@click.option(
+    "--from",
+    "from_date",
+    type=click.STRING,
+    default=None,
+    help="Start date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --to.",
+)
+@click.option(
+    "--to",
+    "to_date",
+    type=click.STRING,
+    default=None,
+    help="End date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --from.",
+)
 @click.option(
     "--format",
     "output_format",
@@ -1912,11 +2061,43 @@ def export_measurements(
     ctx,
     devnames: T.Optional[T.List[str]],
     device_category: str,
-    days: int,
+    days: T.Optional[int],
+    from_date: T.Optional[str],
+    to_date: T.Optional[str],
     output_format: T.Optional[str],
     output: T.Optional[str],
 ):
-    """Export device measurements to CSV or JSON format."""
+    """Export device measurements to CSV or JSON format.
+
+    \b
+    Date Range Options:
+        --days N              Export last N days from today (default: 0, today only)
+        --from DATE           Start date (yyyymmdd or yyyy-mm-dd format)
+        --to DATE             End date (yyyymmdd or yyyy-mm-dd format)
+        --from DATE --to DATE Explicit date range
+        --from DATE --days N  Start date plus N days
+        --to DATE --days N    End date minus N days
+
+    \b
+    Examples:
+        # Export scale measurements for today only
+        omramin export --category scale
+    \b
+        # Export scale measurements for last 30 days
+        omramin export --category scale --days 30 -o output.csv
+    \b
+        # Export with explicit date range
+        omramin export --category BPM --from 20240101 --to 20240131 --format json
+    \b
+        # Export with separators in date format
+        omramin export --category BPM --from 2024-01-01 --to 2024-01-31
+    \b
+        # Start date plus 30 days
+        omramin export --category scale --from 20240101 --days 30
+    \b
+        # End date minus 7 days
+        omramin export --category BPM --to 20240131 --days 7
+    """
 
     config_path = ctx.obj["config_path"]
 
@@ -1930,11 +2111,23 @@ def export_measurements(
     devices = config.get("omron", {}).get("devices", [])
     category = OC.DeviceCategory[device_category]
 
-    try:
-        startLocal, endLocal = calculate_date_range(days)
+    # Default to 0 days if no date options provided
+    if days is None and from_date is None and to_date is None:
+        days = 0
 
-    except DateRangeException:
-        L.info("Invalid date range")
+    try:
+        startLocal, endLocal = calculate_date_range_from_options(
+            from_date=from_date,
+            to_date=to_date,
+            days=days,
+        )
+
+    except DateRangeException as e:
+        L.error(f"Invalid date range: {e}")
+        return
+
+    except ValueError as e:
+        L.error(f"Date parsing error: {e}")
         return
 
     # filter devices by enabled, category and name/mac address
