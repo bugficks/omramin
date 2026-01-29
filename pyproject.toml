@@ -90,7 +90,9 @@ ignore = [
   ".debug",
   ".vscode",
   "pyproject.toml",
+  "tests",
 ]
+max-module-lines = 1500
 
 [tool.pylint.messages_control]
 disable = [
@@ -111,6 +113,7 @@ exclude = [
   ".other",
   ".debug",
   ".vscode",
+  "tests",
 ]
 indent-width = 4
 line-length = 120
@@ -125,6 +128,7 @@ exclude = [
   ".other",
   ".debug",
   ".vscode",
+  "tests",
 ]
 
 [[tool.mypy.overrides]]
@@ -153,17 +157,20 @@ exclude = [
   ".other",
   ".debug",
   ".vscode",
+  "tests",
 ]
 extend-ignore = []
 ignore = [
   "E402", # module level import not at top of file
 ]
-per-file-ignores = [
-  # max complexity, whitespace before ':', line break before binary operator
-  "omramin.py:C901,E203,W503",
-]
+
 max-complexity = 15
 max-line-length = 120
+per-file-ignores = [
+  # max complexity, whitespace before ':', line break before binary operator
+  "omramin.py:C901,E203,W503", # ignore all checks in tests
+  "tests/*:E,W,F,C",
+]
 
 [tool.isort]
 force_grid_wrap = 0
@@ -180,6 +187,7 @@ skip_glob = [
   ".other",
   ".debug",
   ".vscode",
+  "tests",
 ]
 use_parentheses = true
 

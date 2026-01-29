@@ -649,8 +649,8 @@ def load_service_tokens(
     # Try migration from config.json (embedded tokens)
     if migrate_from_config and service in migrate_from_config:
         service_cfg = migrate_from_config[service]
-        if "tokendata" in service_cfg:
-            tokendata = service_cfg["tokendata"]
+        tokendata = service_cfg.get("tokendata")
+        if tokendata:
             L.debug(f"Migrating {service} tokens from {CONFIG_FILENAME}")
             if save_service_tokens(config_path, service, email, tokendata):
                 L.info(f"Migrated {service} tokens from {CONFIG_FILENAME}")
@@ -846,6 +846,9 @@ def omron_login(config_path: str) -> T.Optional[OC.OmronClient]:
             email = answers["email"]
             password = answers["password"]
             country = answers["country"]
+
+            if not email or not password or not country:
+                raise LoginError("Missing credentials") from None
 
             # Retry login with new credentials
             oc = OC.OmronClient(country)
