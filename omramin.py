@@ -32,7 +32,7 @@ import platform
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from functools import cache
+from functools import cache, wraps
 
 import click
 import garminconnect as GC
@@ -169,10 +169,7 @@ if _E("OMRAMIN_GARMIN_DEBUG"):
 
 
 def _configure_logging_levels(debug: bool = False) -> None:
-    """Configure logging levels based on debug flag.
-
-    Environment variables take precedence if already set.
-    """
+    """Configure logging levels based on debug flag."""
 
     if debug:
         # Debug: everything at DEBUG level
@@ -903,6 +900,8 @@ def config_write_handler(config_path: str, config: dict) -> T.Generator[dict, No
 
     try:
         yield config
+
+        pathlib.Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         U.json_save(config_path, config)
 
     except (OSError, IOError, PermissionError, ValueError) as e:
@@ -916,6 +915,27 @@ def config_write_handler(config_path: str, config: dict) -> T.Generator[dict, No
             L.error(f"Failed to save configuration: {e}")
 
         raise
+
+
+def require_config_exists(config_path: str) -> None:
+    """Check if config file exists and exit with error if not."""
+
+    if not pathlib.Path(config_path).exists():
+        L.error(f"Config file '{config_path}' not found.")
+        L.info("Run 'omramin init' to create initial configuration.")
+        raise SystemExit(1)
+
+
+def requires_config(func: T.Callable) -> T.Callable:
+    """Decorator to ensure config file exists before command executes."""
+
+    @wraps(func)
+    def wrapper(ctx: click.Context, *args, **kwargs):
+        config_path = ctx.obj["config_path"]
+        require_config_exists(config_path)
+        return func(ctx, *args, **kwargs)
+
+    return wrapper
 
 
 def omron_ble_scan(macAddrsExistig: T.List[str], opts: Options) -> T.List[str]:
@@ -1459,24 +1479,9 @@ def _get_default_config_path() -> pathlib.Path:
     return platform_path
 
 
-def _set_keyring_backend_env(_ctx: click.Context, _param: T.Any, value: T.Optional[str]) -> T.Optional[str]:
-    """Callback to set keyring backend environment variable"""
-
-    if value:
-        os.environ["OMRAMIN_KEYRING_BACKEND"] = value.lower()
-
-    return value
-
-
-def _set_keyring_file_env(_ctx: click.Context, _param: T.Any, value: T.Optional[str]) -> T.Optional[str]:
-    """Callback to set keyring file environment variable"""
-
-    if value:
-        os.environ["OMRAMIN_KEYRING_FILE"] = str(pathlib.Path(value).expanduser().resolve())
-
-    return value
-
-
+# envvar="OMRAMIN_CONFIG" would break:
+# OMRAMIN_CONFIG=/wrong/path omramin --config /right/path xxx
+# Would incorrectly use /wrong/path instead of /right/path
 @click.group()
 @click.version_option(__version__)
 @click.option(
@@ -1492,8 +1497,7 @@ def _set_keyring_file_env(_ctx: click.Context, _param: T.Any, value: T.Optional[
     type=click.Choice(list(KeyringBackend), case_sensitive=False),
     default=None,
     show_default=False,
-    expose_value=False,
-    callback=_set_keyring_backend_env,
+    envvar="OMRAMIN_KEYRING_BACKEND",
     help="Token storage backend: system (auto-detect), file (plaintext), encrypted (password-protected)",
 )
 @click.option(
@@ -1501,35 +1505,42 @@ def _set_keyring_file_env(_ctx: click.Context, _param: T.Any, value: T.Optional[
     type=click.Path(writable=True, dir_okay=False),
     default=None,
     show_default=False,
-    expose_value=False,
-    callback=_set_keyring_file_env,
+    envvar="OMRAMIN_KEYRING_FILE",
     help="File path for file/encrypted backends (default: {config}.tokens.json)",
 )
 @click.option(
     "--debug",
     is_flag=True,
     default=False,
-    expose_value=True,
+    envvar="OMRAMIN_DEBUG",
     help="Enable debug logging (shows detailed HTTP traffic and internal operations)",
 )
 @click.pass_context
-def cli(ctx: click.Context, config_path: click.Path, debug: bool):
+def cli(
+    ctx: click.Context,
+    config_path: click.Path,
+    keyring_backend: T.Optional[str],
+    keyring_file: T.Optional[str],
+    debug: bool,
+):
     """Sync data from 'OMRON connect' to 'Garmin Connect'
 
     Global options must be specified BEFORE the command:
         omramin --debug sync --days 1
     """
 
-    # Create config directory
     _config_path = str(config_path)
-    pathlib.Path(_config_path).parent.mkdir(parents=True, exist_ok=True)
 
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = _config_path
 
-    # Configure logging (unless env vars already set)
-    if not _E("OMRAMIN_DEBUG"):
-        _configure_logging_levels(debug=debug)
+    if keyring_backend:
+        os.environ["OMRAMIN_KEYRING_BACKEND"] = keyring_backend.lower()
+
+    if keyring_file:
+        os.environ["OMRAMIN_KEYRING_FILE"] = str(pathlib.Path(keyring_file).expanduser().resolve())
+
+    _configure_logging_levels(debug=debug)
 
 
 ########################################################################################################################
@@ -1537,6 +1548,7 @@ def cli(ctx: click.Context, config_path: click.Path, debug: bool):
 
 @cli.command(name="list")
 @click.pass_context
+@requires_config
 def list_devices(ctx: click.Context):
     """List all configured devices."""
 
@@ -1696,6 +1708,7 @@ def add_device(
 @cli.command(name="config")
 @click.argument("devname", required=True, type=str, nargs=1)
 @click.pass_context
+@requires_config
 def edit_device(ctx: click.Context, devname: str):
     """Edit device configuration."""
 
@@ -1735,6 +1748,7 @@ def edit_device(ctx: click.Context, devname: str):
 @cli.command(name="remove")
 @click.argument("devname", required=True, type=str, nargs=1)
 @click.pass_context
+@requires_config
 def remove_device(ctx: click.Context, devname: str):
     """Remove a device by name or MAC address."""
 
@@ -1789,6 +1803,7 @@ def remove_device(ctx: click.Context, devname: str):
     help="Do not write to Garmin Connect.",
 )
 @click.pass_context
+@requires_config
 def sync_device(
     ctx: click.Context,
     devnames: T.List[str],
@@ -1892,6 +1907,7 @@ def sync_device(
 )
 @click.option("--output", "-o", type=click.Path(), help="Output file path")
 @click.pass_context
+@requires_config
 def export_measurements(
     ctx,
     devnames: T.Optional[T.List[str]],
