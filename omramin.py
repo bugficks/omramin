@@ -1396,28 +1396,67 @@ def _get_xdg_config_path() -> pathlib.Path:
     return pathlib.Path(PATH_XDG_CONFIG).expanduser().resolve()
 
 
+def _get_platform_config_path() -> pathlib.Path:
+    """Get platform-native config path without checking if it exists.
+
+    Returns:
+        - Windows: %APPDATA%/omramin/config.json
+        - macOS: ~/Library/Application Support/omramin/config.json
+        - Linux/Unix: ~/.config/omramin/config.json (XDG)
+    """
+
+    system = platform.system()
+
+    if system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return pathlib.Path(appdata) / CONFIG_DIR_NAME / CONFIG_FILENAME
+
+        return pathlib.Path.home() / "AppData" / "Roaming" / CONFIG_DIR_NAME / CONFIG_FILENAME
+
+    elif system == "Darwin":
+        return pathlib.Path.home() / "Library" / "Application Support" / CONFIG_DIR_NAME / CONFIG_FILENAME
+
+    else:
+        return _get_xdg_config_path()
+
+
 def _get_default_config_path() -> pathlib.Path:
-    """Get default config path with precedence: OMRAMIN_CONFIG > ./config.json > XDG > ~/.omramin/config.json"""
-    # Check environment variable first
+    """Get default config path with precedence:
+
+    1. OMRAMIN_CONFIG env var (if set)
+    2. ./config.json (if exists in current directory)
+    3. XDG_CONFIG_HOME path (if XDG_CONFIG_HOME env var is set AND path exists)
+    4. ~/.config/omramin/config.json (if exists)
+    5. Platform-native path (if exists)
+    6. ~/.omramin/config.json (if exists)
+    7. Defaults to platform-native path for new installations
+    """
+
     if env_path := _E("OMRAMIN_CONFIG"):
         return pathlib.Path(env_path).expanduser().resolve()
 
-    # Check current directory
     if pathlib.Path(f"./{CONFIG_FILENAME}").exists():
         return pathlib.Path(f"./{CONFIG_FILENAME}").resolve()
 
-    # Check XDG config path
-    xdg_path = _get_xdg_config_path()
-    if xdg_path.exists():
-        return xdg_path
+    if _E("XDG_CONFIG_HOME"):
+        xdg_path = _get_xdg_config_path()
+        if xdg_path.exists():
+            return xdg_path
 
-    # Check legacy path
+    xdg_default_path = pathlib.Path(PATH_XDG_CONFIG).expanduser().resolve()
+    if xdg_default_path.exists():
+        return xdg_default_path
+
+    platform_path = _get_platform_config_path()
+    if platform_path.exists():
+        return platform_path
+
     legacy_path = pathlib.Path(PATH_DEFAULT_CONFIG).expanduser().resolve()
     if legacy_path.exists():
         return legacy_path
 
-    # Default to XDG path for new installations
-    return xdg_path
+    return platform_path
 
 
 def _set_keyring_backend_env(_ctx: click.Context, _param: T.Any, value: T.Optional[str]) -> T.Optional[str]:
