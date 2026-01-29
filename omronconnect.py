@@ -1,7 +1,6 @@
 ########################################################################################################################
 
 import typing as T  # isort: split
-
 import datetime
 import enum
 import hashlib
@@ -10,8 +9,9 @@ import logging
 import re
 import zlib
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
+from typing import get_type_hints
 
 import httpx
 import pytz
@@ -199,6 +199,19 @@ class DeviceCategory(enum.StrEnum):
     # PULSE_OXIMETER = "4"
 
 
+def _coerce_dataclass_fields(self) -> None:
+    type_hints = get_type_hints(type(self))
+    for field in fields(self):
+        attr = getattr(self, field.name)
+        field_type = type_hints[field.name]
+        if field_type == datetime.tzinfo:
+            if not isinstance(attr, datetime.tzinfo):
+                object.__setattr__(self, field.name, pytz.timezone(attr))
+
+        else:
+            object.__setattr__(self, field.name, field_type(attr))
+
+
 @dataclass(frozen=True, kw_only=False)
 class BodyIndexListItem:
     value: int
@@ -207,8 +220,7 @@ class BodyIndexListItem:
     measurementId: int
 
     def __post_init__(self) -> None:
-        for field in ["value", "subtype", "scale", "measurementId"]:
-            object.__setattr__(self, field, int(getattr(self, field)))
+        _coerce_dataclass_fields(self)
 
 
 ########################################################################################################################
@@ -227,14 +239,7 @@ class BPMeasurement:
     notes: str = ""
 
     def __post_init__(self) -> None:
-        for field in ["systolic", "diastolic", "pulse", "measurementDate"]:
-            object.__setattr__(self, field, int(getattr(self, field)))
-
-        for field in ["irregularHB", "movementDetect", "cuffWrapDetect"]:
-            object.__setattr__(self, field, bool(getattr(self, field)))
-
-        if not isinstance(self.timeZone, datetime.tzinfo):
-            object.__setattr__(self, "timeZone", pytz.timezone(self.timeZone))
+        _coerce_dataclass_fields(self)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -251,22 +256,7 @@ class WeightMeasurement:
     notes: str = ""
 
     def __post_init__(self) -> None:
-        for field in [
-            "weight",
-            "bmiValue",
-            "bodyFatPercentage",
-            "restingMetabolism",
-            "skeletalMusclePercentage",
-            "visceralFatLevel",
-            "metabolicAge",
-        ]:
-            object.__setattr__(self, field, float(getattr(self, field)))
-
-        for field in ["measurementDate", "metabolicAge"]:
-            object.__setattr__(self, field, int(getattr(self, field)))
-
-        if not isinstance(self.timeZone, datetime.tzinfo):
-            object.__setattr__(self, "timeZone", pytz.timezone(self.timeZone))
+        _coerce_dataclass_fields(self)
 
 
 MeasurementTypes = T.Union[BPMeasurement, WeightMeasurement]
