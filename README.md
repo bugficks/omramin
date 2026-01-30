@@ -1,148 +1,309 @@
 # omramin
 
-Sync blood pressure and weight measurements from _OMRON connect_ to _Garmin Connect_.
+Sync **blood pressure** and **weight** measurements from **OMRON connect** to **Garmin Connect**.
 
-OMRON Connect utilizes two distinct API versions:
+`omramin` pulls measurements from your OMRON account and uploads them to Garmin Connect using their respective web APIs. It is intended as a small bridge service, not a full replacement for either app.
 
-    API v1: Primarily used in the Asia/Pacific region
-    API v2: Implemented in other global regions
+> **Note:** For development and testing, consider using a secondary Garmin Connect account.
 
-Note: The current implementation has been tested mostly with API v1. Feedback and testing for API v2 integration are welcomed.  
-For testing and development purposes, it is strongly recommended to use a secondary Garmin Connect account.
+---
 
 ## Features
 
-Supports weight and blood pressure measurements.
+- Synchronizes:
+  - **Weight** measurements from supported OMRON scales
+  - **Blood pressure** measurements from supported OMRON blood pressure monitors
+- Bridges OMRON connect → Garmin Connect
+- Supports multiple devices and users per device (OMRON user slots)
+
+---
 
 ## Table of Contents
 
--   [Installation](#installation)
--   [Updating](#update)
--   [Usage](#usage)
-    -   [Adding a Device](#adding-a-device)
-    -   [Synchronizing to Garmin Connect](#synchronizing-to-garmin-connect)
--   [Commands](#commands)
--   [Related Projects](#related-projects)
--   [Contributing](#contributing)
--   [License](#license)
+- [Installation](#installation)
+- [Updating](#updating)
+- [Usage](#usage)
+  - [Getting Started](#getting-started)
+  - [Configuration](#configuration)
+  - [Adding a Device](#adding-a-device)
+  - [Synchronizing to Garmin Connect](#synchronizing-to-garmin-connect)
+  - [Debugging](#debugging)
+- [Commands](#commands)
+- [Changelog](CHANGELOG.md)
+- [Related Projects](#related-projects)
+- [Contributing](#contributing)
+- [License](#license)
 
-### Installation
+---
 
-1. Clone the repository:
+## Installation
 
+**Quick install:**
+
+```sh
+# Using uv (recommended)
+uv pip install "git+https://github.com/bugficks/omramin.git"
+
+# Using pip
+pip install "git+https://github.com/bugficks/omramin.git"
+
+# Run without installing (using uvx)
+uvx --from "git+https://github.com/bugficks/omramin.git" omramin init
 ```
+
+This installs the base package. Most users can start with `omramin init` right away.
+
+### Optional: Bluetooth Device Discovery
+
+If you want to discover OMRON devices via Bluetooth scanning (instead of using API-based discovery or manual MAC entry), install the bluetooth extra:
+
+```sh
+# Using uv
+uv pip install "git+https://github.com/bugficks/omramin.git[bluetooth]"
+
+# Using pip
+pip install "git+https://github.com/bugficks/omramin.git[bluetooth]"
+```
+
+**Without Bluetooth support**, you can still:
+
+- Use API-based device discovery: `omramin init --discovery-method api`
+- Add devices manually by MAC address: `omramin add --macaddr XX:XX:XX:XX:XX:XX`
+
+### For Developers
+
+Clone and install in editable mode:
+
+```sh
 git clone https://github.com/bugficks/omramin.git
 cd omramin
-```
-
-2. Create and activate a virtual environment:
-
-```
 python -m venv .venv
-source .venv/bin/activate  # On Windows, use `.venv\Scripts\activate`
+source .venv/bin/activate      # On Windows: .venv\Scripts\activate
+pip install -Ue ".[bluetooth]"
 ```
 
-3. Install the required dependencies:
+---
 
-```
-pip install -Ue .
+## Updating
+
+```sh
+# Using uv
+uv pip install --upgrade "git+https://github.com/bugficks/omramin.git"
+
+# Using pip
+pip install --upgrade "git+https://github.com/bugficks/omramin.git"
+
+# Editable installations
+git pull && pip install -Ue ".[bluetooth]"
 ```
 
-### Update
-
-```
-git pull
-source .venv/bin/activate  # On Windows, use `.venv\Scripts\activate`
-pip install -Ue .
-```
+---
 
 ## Usage
 
-### Adding a device:
+### Getting Started
 
-Adding a device requires the MAC address of the device.
-
-#### Interactively:
-
-To add a new OMRON device, ensure it's in pairing mode and run:
+Run the setup wizard:
 
 ```sh
-omramin add
+omramin init
 ```
 
-#### By MAC address:
+This will:
 
-If MAC address is known run e.g.:
+1. Authenticate with Garmin Connect and OMRON Connect
+2. Discover and configure your OMRON devices
+3. Create a config file
+
+Then sync measurements:
 
 ```sh
-  omramin add -m 00:11:22:33:44:55
-  omramin add -m 00:11:22:33:44:55 --category scale --name "My Scale" --user 3
+omramin sync
 ```
 
-### Synchronizing to Garmin Connect:
-
-To sync data from your OMRON device to Garmin Connect:
+**Partial setup:**
 
 ```sh
-omramin sync --days 1
+omramin init --skip-garmin          # OMRON only
+omramin init --skip-devices         # Authentication only
+omramin init --discovery-method api # Skip Bluetooth, use API
 ```
 
-This will synchronize data for the today and yesterday. Adjust the --days parameter as needed.  
-If this is first time you will be asked to enter login information for both _Garmin Connect_ and _OMRON connect_.
+---
 
-```log
-[2024-11-14 08:04:20] [I] Garmin login
-[?] > Enter email: user@garmin.connect
-[?] > Enter password: *******************
-[?] > Is this a Chinese account? (y/N):
-[?] > Enter MFA/2FA code: xxxxxx
-[2024-11-14 08:04:58] [I] Logged in to Garmin Connect
-[2024-11-14 08:04:59] [I] Omron login
-[?] > Enter email: user@omron.connect
-[?] > Enter password: ********************
-[?] > Enter country code (e.g. 'US'): XX
-[2024-11-14 08:05:31] [I] Logged in to OMRON connect
-[2024-11-14 08:05:31] [I] Start synchronizing device 'Scale HBF-702T' from 2024-11-13T00:00:00 to 2024-11-14T23:59:59
-[2024-11-14 08:05:31] [I] Downloaded 2 entries from 'OMRON connect' for 'Scale HBF-702T'
-[2024-11-14 08:05:32] [I] Downloaded 1 weigh-ins from 'Garmin Connect'
-[2024-11-14 08:05:32] [I]   + '2024-11-14T07:56:33+07:00' adding weigh-in: xy.z kg
-[2024-11-14 08:05:32] [I]   - '2024-11-13T07:36:01+07:00' weigh-in already exists
-[2024-11-14 08:05:32] [I] Device 'Scale HBF-702T' successfully synced.
-[2024-11-14 08:05:32] [I] Start synchronizing device 'BPM HEM-7600T' from 2024-11-13T00:00:00 to 2024-11-14T23:59:59
-[2024-11-14 08:05:32] [I] Downloaded 4 entries from 'OMRON connect' for 'BPM HEM-7600T'
-[2024-11-14 08:05:32] [I] Downloaded 3 bpm measurements from 'Garmin Connect'
-[2024-11-14 08:05:32] [I]   + '2024-11-14T07:58:23+07:00' adding blood pressure (xxx/yy mmHg, zz bpm)
-[2024-11-14 08:05:33] [I]   - '2024-11-13T19:57:30+07:00' blood pressure already exists
-[2024-11-14 08:05:33] [I]   - '2024-11-13T15:05:18+07:00' blood pressure already exists
-[2024-11-14 08:05:33] [I]   - '2024-11-13T07:46:41+07:00' blood pressure already exists
-[2024-11-14 08:05:33] [I] Device 'BPM HEM-7600T' successfully synced.
-```
+### Configuration
 
-### Commands
+**Config file location** (platform-native):
 
-| Command | Description                                       |
-| ------- | ------------------------------------------------- |
-| add     | Add new OMRON device                              |
-| config  | Configure a device by name or MAC address         |
-| export  | Export device measurements to CSV or JSON format. |
-| list    | List all configured devices                       |
-| remove  | Remove a device by name or MAC address            |
-| sync    | Sync device(s) to Garmin Connect                  |
+- **Linux:** `~/.config/omramin/config.json`
+- **macOS:** `~/Library/Application Support/omramin/config.json`
+- **Windows:** `%APPDATA%\omramin\config.json`
 
-For more details on each command, use:
+**Token storage:**
+
+- **macOS/Linux:** System keyring (Keychain / SecretService)
+- **Windows:** File-based (WinVault has size limits)
+
+Override paths with environment variables:
 
 ```sh
-omramin [COMMAND] --help
+OMRAMIN_CONFIG=/path/to/config.json omramin sync
 ```
+
+<details>
+<summary><strong>Advanced: Custom Keyring Backends</strong></summary>
+
+Change token storage backend:
+
+```sh
+# Use file backend on macOS/Linux
+OMRAMIN_KEYRING_BACKEND=file omramin sync
+
+# Use encrypted file backend
+OMRAMIN_KEYRING_PASSWORD="secret" omramin sync
+
+# Custom file path
+OMRAMIN_KEYRING_FILE=/path/to/tokens.json omramin --keyring-backend file sync
+```
+
+Third-party backends (e.g., GPG-encrypted, Pass):
+
+```sh
+pip install keyrings.cryptfile
+export PYTHON_KEYRING_BACKEND=keyrings.cryptfile.cryptfile.CryptFileKeyring
+omramin sync
+```
+
+See [keyring backends](https://github.com/jaraco/keyring#third-party-backends) for more options.
+
+</details>
+
+---
+
+### Adding a Device
+
+Three ways to add devices:
+
+**1. Automatic (during init):**
+
+```sh
+omramin init  # Discovers devices via API or Bluetooth
+```
+
+**2. Interactive add:**
+
+```sh
+omramin add  # Scans for Bluetooth devices in pairing mode
+```
+
+**3. Manual (if you know the MAC address):**
+
+```sh
+omramin add --macaddr 00:11:22:33:44:55 --category scale --name "My Scale"
+```
+
+Get MAC addresses from your OMRON account:
+
+```sh
+omramin omron list-devices
+```
+
+---
+
+### Synchronizing to Garmin Connect
+
+```sh
+omramin sync           # Sync today only (default)
+omramin sync --days 7  # Sync last 7 days
+omramin sync --from 2024-01-01 --to 2024-01-31  # Date range
+```
+
+Sync specific devices:
+
+```sh
+omramin sync "My Scale"           # By name
+omramin sync --category BPM       # All blood pressure monitors
+```
+
+Duplicates are automatically detected and skipped.
+
+---
+
+### Debugging
+
+Enable verbose logging:
+
+```sh
+omramin --debug sync
+```
+
+Targeted debugging:
+
+```sh
+OMRAMIN_OMRON_DEBUG=1 omramin sync   # OMRON API only
+OMRAMIN_GARMIN_DEBUG=1 omramin sync  # Garmin API only
+```
+
+---
+
+## Commands
+
+| Command  | Description                                              |
+| -------- | -------------------------------------------------------- |
+| `init`   | Interactive setup wizard                                 |
+| `sync`   | Sync measurements to Garmin Connect                      |
+| `add`    | Add a device                                             |
+| `list`   | List configured devices                                  |
+| `config` | Edit device settings                                     |
+| `remove` | Remove a device                                          |
+| `export` | Export measurements to CSV/JSON                          |
+| `garmin` | Garmin Connect authentication (login/logout)             |
+| `omron`  | OMRON Connect authentication (login/logout/list-devices) |
+
+### Common Usage
+
+```sh
+# Authentication
+omramin garmin login
+omramin omron login
+
+# Device management
+omramin omron list-devices         # Show devices in OMRON account
+omramin add                        # Add device interactively
+omramin list                       # Show configured devices
+
+# Sync
+omramin sync                       # Sync all devices (today only)
+omramin sync --days 7              # Sync last 7 days
+```
+
+**Help:**
+
+```sh
+omramin --help
+omramin [command] --help
+```
+
+---
 
 ## Related Projects
 
--   [export2garmin](https://github.com/RobertWojtowicz/export2garmin): A project that allows automatic synchronization of data from Mi Body Composition Scale 2 and Omron blood pressure monitors to Garmin Connect.
+- [`export2garmin`](https://github.com/RobertWojtowicz/export2garmin)  
+  Synchronizes data from Mi Body Composition Scale 2 and OMRON blood pressure monitors to Garmin Connect.
+
+---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome. Bug reports, feature requests, and pull requests help improve:
+
+- Device compatibility
+- Error handling and diagnostics
+
+Open an issue or submit a PR on GitHub.
+
+---
 
 ## License
 
-This project is licensed under the GPLv2 License.
+This project is distributed under the **GPLv2** license.
