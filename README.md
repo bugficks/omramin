@@ -248,17 +248,16 @@ OMRAMIN_GARMIN_DEBUG=1 omramin sync  # Garmin API only
 
 ## Commands
 
-| Command  | Description                                              |
-| -------- | -------------------------------------------------------- |
-| `init`   | Interactive setup wizard                                 |
-| `sync`   | Sync measurements to Garmin Connect                      |
-| `add`    | Add a device                                             |
-| `list`   | List configured devices                                  |
-| `config` | Edit device settings                                     |
-| `remove` | Remove a device                                          |
-| `export` | Export measurements to CSV/JSON                          |
-| `garmin` | Garmin Connect authentication (login/logout)             |
-| `omron`  | OMRON Connect authentication (login/logout/list-devices) |
+| Command  | Description                                                       |
+| -------- | ----------------------------------------------------------------- |
+| `init`   | Interactive setup wizard                                          |
+| `sync`   | Sync measurements to Garmin Connect                               |
+| `add`    | Add a device                                                      |
+| `list`   | List configured devices                                           |
+| `config` | Edit device settings                                              |
+| `remove` | Remove a device                                                   |
+| `garmin` | Garmin Connect authentication (login/logout)                      |
+| `omron`  | OMRON Connect operations (login/logout/list-devices/export)       |
 
 ### Common Usage
 

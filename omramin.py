@@ -2023,206 +2023,6 @@ def sync_device(
 ########################################################################################################################
 
 
-@cli.command(name="export")
-@click.argument("devnames", required=False, nargs=-1)
-@click.option(
-    "--category",
-    "-c",
-    "device_category",
-    required=True,
-    type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
-)
-@click.option("--days", default=None, type=click.INT, help="Number of days. Can combine with --from or --to.")
-@click.option(
-    "--from",
-    "from_date",
-    type=click.STRING,
-    default=None,
-    help="Start date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --to.",
-)
-@click.option(
-    "--to",
-    "to_date",
-    type=click.STRING,
-    default=None,
-    help="End date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --from.",
-)
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["csv", "json"], case_sensitive=False),
-    default="csv",
-    help="Output format",
-)
-@click.option("--output", "-o", type=click.Path(), help="Output file path")
-@click.pass_context
-@requires_config
-def export_measurements(
-    ctx,
-    devnames: T.Optional[T.List[str]],
-    device_category: str,
-    days: T.Optional[int],
-    from_date: T.Optional[str],
-    to_date: T.Optional[str],
-    output_format: T.Optional[str],
-    output: T.Optional[str],
-):
-    """Export device measurements to CSV or JSON format.
-
-    \b
-    Date Range Options:
-        --days N              Export last N days from today (default: 0, today only)
-        --from DATE           Start date (yyyymmdd or yyyy-mm-dd format)
-        --to DATE             End date (yyyymmdd or yyyy-mm-dd format)
-        --from DATE --to DATE Explicit date range
-        --from DATE --days N  Start date plus N days
-        --to DATE --days N    End date minus N days
-
-    \b
-    Examples:
-        # Export scale measurements for today only
-        omramin export --category scale
-    \b
-        # Export scale measurements for last 30 days
-        omramin export --category scale --days 30 -o output.csv
-    \b
-        # Export with explicit date range
-        omramin export --category BPM --from 20240101 --to 20240131 --format json
-    \b
-        # Export with separators in date format
-        omramin export --category BPM --from 2024-01-01 --to 2024-01-31
-    \b
-        # Start date plus 30 days
-        omramin export --category scale --from 20240101 --days 30
-    \b
-        # End date minus 7 days
-        omramin export --category BPM --to 20240131 --days 7
-    """
-
-    config_path = ctx.obj["config_path"]
-
-    try:
-        config = U.json_load(config_path)
-
-    except FileNotFoundError:
-        L.error(f"Config file '{config_path}' not found.")
-        return
-
-    devices = config.get("omron", {}).get("devices", [])
-    category = OC.DeviceCategory[device_category]
-
-    # Default to 0 days if no date options provided
-    if days is None and from_date is None and to_date is None:
-        days = 0
-
-    try:
-        startLocal, endLocal = calculate_date_range_from_options(
-            from_date=from_date,
-            to_date=to_date,
-            days=days,
-        )
-
-    except DateRangeException as e:
-        L.error(f"Invalid date range: {e}")
-        return
-
-    except ValueError as e:
-        L.error(f"Date parsing error: {e}")
-        return
-
-    # filter devices by enabled, category and name/mac address
-    devices = filter_devices(devices, devnames=devnames, category=category)
-    if not devices:
-        L.info("No matching devices found")
-        return
-
-    startdateStr = datetime.fromtimestamp(startLocal).date().isoformat()
-    enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
-
-    try:
-        oc = omron_login(config_path)
-
-    except LoginError:
-        L.info("Failed to login to OMRON connect.")
-        return
-
-    if not oc:
-        return
-
-    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]] = {}
-    for device in devices:
-        ocDev = OC.OmronDevice(**device)
-        L.info(f"Exporting device '{ocDev.name}' from {startdateStr} to {enddateStr}")
-
-        measurements = oc.get_measurements(
-            ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000)
-        )
-        if measurements:
-            exportdata[ocDev.serial] = (ocDev, measurements)
-
-    if not exportdata:
-        L.info("No measurements found")
-        return
-
-    if not output:
-        output = (
-            f"omron_{category.name}_{datetime.fromtimestamp(startLocal).date()}_"
-            f"{datetime.fromtimestamp(endLocal).date()}.{output_format}"
-        )
-
-    if output_format == "json":
-        export_json(output, exportdata)
-
-    else:
-        export_csv(output, exportdata)
-
-    L.info(f"Exported {len(exportdata)} measurements to {output}")
-
-
-def export_csv(
-    output: str,
-    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
-) -> None:
-    with open(output, "w", newline="\n", encoding="utf-8") as f:
-        writer = None
-        for ocDev, measurements in exportdata.values():
-            for m in measurements:
-                dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
-                row = {
-                    "timestamp": dt.isoformat(),
-                    "deviceName": ocDev.name,
-                    "deviceCategory": ocDev.category.name,
-                }
-                row.update(dataclasses.asdict(m))
-
-                if writer is None:
-                    writer = csv.DictWriter(
-                        f, fieldnames=row.keys(), quotechar='"', quoting=csv.QUOTE_ALL, lineterminator="\n"
-                    )
-                    writer.writeheader()
-
-                writer.writerow(row)
-
-
-def export_json(
-    output: str,
-    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
-) -> None:
-    data = []
-    for ocDev, measurements in exportdata.values():
-        for m in measurements:
-            dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
-            entry = {
-                "timestamp": dt.isoformat(),
-                "deviceName": ocDev.name,
-                "deviceCategory": ocDev.category.name,
-            }
-            entry.update(dataclasses.asdict(m))
-            data.append(entry)
-
-    U.json_save(output, data)
-
-
 ########################################################################################################################
 # Garmin authentication commands
 ########################################################################################################################
@@ -2587,6 +2387,206 @@ def omron_list_devices_cmd(ctx: click.Context) -> None:
 
     except Exception as e:  # pylint: disable=broad-except
         L.error(f"Failed to fetch devices: {e}")
+
+
+@omron_group.command(name="export")
+@click.argument("devnames", required=False, nargs=-1)
+@click.option(
+    "--category",
+    "-c",
+    "device_category",
+    required=True,
+    type=click.Choice(list(OC.DeviceCategory.__members__.keys()), case_sensitive=False),
+)
+@click.option("--days", default=None, type=click.INT, help="Number of days. Can combine with --from or --to.")
+@click.option(
+    "--from",
+    "from_date",
+    type=click.STRING,
+    default=None,
+    help="Start date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --to.",
+)
+@click.option(
+    "--to",
+    "to_date",
+    type=click.STRING,
+    default=None,
+    help="End date (yyyymmdd or yyyy-mm-dd). Can combine with --days or --from.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["csv", "json"], case_sensitive=False),
+    default="csv",
+    help="Output format",
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.pass_context
+@requires_config
+def export_measurements(
+    ctx,
+    devnames: T.Optional[T.List[str]],
+    device_category: str,
+    days: T.Optional[int],
+    from_date: T.Optional[str],
+    to_date: T.Optional[str],
+    output_format: T.Optional[str],
+    output: T.Optional[str],
+):
+    """Export device measurements to CSV or JSON format.
+
+    \b
+    Date Range Options:
+        --days N              Export last N days from today (default: 0, today only)
+        --from DATE           Start date (yyyymmdd or yyyy-mm-dd format)
+        --to DATE             End date (yyyymmdd or yyyy-mm-dd format)
+        --from DATE --to DATE Explicit date range
+        --from DATE --days N  Start date plus N days
+        --to DATE --days N    End date minus N days
+
+    \b
+    Examples:
+        # Export scale measurements for today only
+        omramin omron export --category scale
+    \b
+        # Export scale measurements for last 30 days
+        omramin omron export --category scale --days 30 -o output.csv
+    \b
+        # Export with explicit date range
+        omramin omron export --category BPM --from 20240101 --to 20240131 --format json
+    \b
+        # Export with separators in date format
+        omramin omron export --category BPM --from 2024-01-01 --to 2024-01-31
+    \b
+        # Start date plus 30 days
+        omramin omron export --category scale --from 20240101 --days 30
+    \b
+        # End date minus 7 days
+        omramin omron export --category BPM --to 20240131 --days 7
+    """
+
+    config_path = ctx.obj["config_path"]
+
+    try:
+        config = U.json_load(config_path)
+
+    except FileNotFoundError:
+        L.error(f"Config file '{config_path}' not found.")
+        return
+
+    devices = config.get("omron", {}).get("devices", [])
+    category = OC.DeviceCategory[device_category]
+
+    # Default to 0 days if no date options provided
+    if days is None and from_date is None and to_date is None:
+        days = 0
+
+    try:
+        startLocal, endLocal = calculate_date_range_from_options(
+            from_date=from_date,
+            to_date=to_date,
+            days=days,
+        )
+
+    except DateRangeException as e:
+        L.error(f"Invalid date range: {e}")
+        return
+
+    except ValueError as e:
+        L.error(f"Date parsing error: {e}")
+        return
+
+    # filter devices by enabled, category and name/mac address
+    devices = filter_devices(devices, devnames=devnames, category=category)
+    if not devices:
+        L.info("No matching devices found")
+        return
+
+    startdateStr = datetime.fromtimestamp(startLocal).date().isoformat()
+    enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
+
+    try:
+        oc = omron_login(config_path)
+
+    except LoginError:
+        L.info("Failed to login to OMRON connect.")
+        return
+
+    if not oc:
+        return
+
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]] = {}
+    for device in devices:
+        ocDev = OC.OmronDevice(**device)
+        L.info(f"Exporting device '{ocDev.name}' from {startdateStr} to {enddateStr}")
+
+        measurements = oc.get_measurements(
+            ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000)
+        )
+        if measurements:
+            exportdata[ocDev.serial] = (ocDev, measurements)
+
+    if not exportdata:
+        L.info("No measurements found")
+        return
+
+    if not output:
+        output = (
+            f"omron_{category.name}_{datetime.fromtimestamp(startLocal).date()}_"
+            f"{datetime.fromtimestamp(endLocal).date()}.{output_format}"
+        )
+
+    if output_format == "json":
+        export_json(output, exportdata)
+
+    else:
+        export_csv(output, exportdata)
+
+    L.info(f"Exported {len(exportdata)} measurements to {output}")
+
+
+def export_csv(
+    output: str,
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
+) -> None:
+    with open(output, "w", newline="\n", encoding="utf-8") as f:
+        writer = None
+        for ocDev, measurements in exportdata.values():
+            for m in measurements:
+                dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
+                row = {
+                    "timestamp": dt.isoformat(),
+                    "deviceName": ocDev.name,
+                    "deviceCategory": ocDev.category.name,
+                }
+                row.update(dataclasses.asdict(m))
+
+                if writer is None:
+                    writer = csv.DictWriter(
+                        f, fieldnames=row.keys(), quotechar='"', quoting=csv.QUOTE_ALL, lineterminator="\n"
+                    )
+                    writer.writeheader()
+
+                writer.writerow(row)
+
+
+def export_json(
+    output: str,
+    exportdata: T.Dict[str, T.Tuple[OC.OmronDevice, T.List[OC.MeasurementTypes]]],
+) -> None:
+    data = []
+    for ocDev, measurements in exportdata.values():
+        for m in measurements:
+            dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
+            entry = {
+                "timestamp": dt.isoformat(),
+                "deviceName": ocDev.name,
+                "deviceCategory": ocDev.category.name,
+            }
+            entry.update(dataclasses.asdict(m))
+            data.append(entry)
+
+    U.json_save(output, data)
 
 
 ########################################################################################################################
