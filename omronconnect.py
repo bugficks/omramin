@@ -1,6 +1,7 @@
 ########################################################################################################################
 
 import typing as T  # isort: split
+
 import datetime
 import enum
 import hashlib
@@ -363,7 +364,15 @@ class OmronConnect(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+    def get_registered_devices(self, days: T.Optional[int] = 30) -> T.Optional[list[OmronDevice]]:
+        """Get registered devices.
+
+        Args:
+            days: For API v1, limits results to devices active in last N days (supports pagination).
+                  For API v2, this parameter is ignored (returns all active devices).
+                  Use None to fetch all historical devices (may be slow for API v1).
+        """
+
         raise NotImplementedError
 
     @abstractmethod
@@ -457,18 +466,40 @@ class OmronConnect1(OmronConnect):
         r.raise_for_status()
         return r.json()
 
-    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
-        r = self._client.post(
-            f"{self._server}{self._APP_URL}/versions/current/synchronizeDeviceConfData",
-            headers=self._headers,
-            json={
-                "countOnlyFlag": 0,
-                # last 30 days
-                "lastSyncDate": int((U.utcnow() - datetime.timedelta(days=30)).timestamp() * 1000),
-            },
-        )
-        r.raise_for_status()
-        resp = r.json()
+    def get_registered_devices(self, days: T.Optional[int] = 30) -> T.Optional[list[OmronDevice]]:
+        """Fetch registered devices with pagination support.
+
+        Args:
+            days: Limit to devices active in last N days. None = all devices (may be slow).
+        """
+
+        syncList = []
+
+        lastSyncDate = 0 if days is None else int((U.utcnow() - datetime.timedelta(days=days)).timestamp() * 1000)
+        payload = {
+            "countOnlyFlag": 0,
+            "lastSyncDate": lastSyncDate,
+        }
+
+        while True:
+            r = self._client.post(
+                f"{self._server}{self._APP_URL}/versions/current/synchronizeDeviceConfData",
+                headers=self._headers,
+                json=payload,
+            )
+            r.raise_for_status()
+            resp = r.json()
+
+            returnedValue = resp.get("returnedValue", {})
+            syncList.extend(returnedValue.get("syncList", []))
+
+            nextPaginationKey = int(returnedValue.get("nextPaginationKey", 0))
+            if not nextPaginationKey or lastSyncDate == nextPaginationKey:
+                break
+
+            payload["lastSyncDate"] = nextPaginationKey
+
+            L.info(f"Fetching next page (pagination key: {nextPaginationKey})")
 
         def unique_devices(sync_list):
             devices = {}
@@ -495,7 +526,7 @@ class OmronConnect1(OmronConnect):
 
             return devices
 
-        devices = unique_devices(resp["returnedValue"]["syncList"])
+        devices = unique_devices(syncList)
         result: list[OmronDevice] = []
         for device in devices.values():
             try:
@@ -760,7 +791,9 @@ class OmronConnect2(OmronConnect):
 
         return resp["data"]
 
-    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+    def get_registered_devices(self, days: T.Optional[int] = 30) -> T.Optional[list[OmronDevice]]:
+        """Fetch registered devices (API v2 returns all active devices, days parameter is ignored)."""
+
         r = self._client.get(f"{self._server}{self._v2}/init-user?app={self._APP_NAME}", headers=self._headers)
         r.raise_for_status()
         resp = r.json()
@@ -1004,13 +1037,13 @@ class OmronClient:
 
         return self._active_client.get_user()
 
-    def get_registered_devices(self) -> T.Optional[list[OmronDevice]]:
+    def get_registered_devices(self, days: T.Optional[int]) -> T.Optional[list[OmronDevice]]:
         """Delegate to active client."""
 
         if not self._active_client:
             raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
 
-        return self._active_client.get_registered_devices()
+        return self._active_client.get_registered_devices(days=days)
 
 
 ########################################################################################################################

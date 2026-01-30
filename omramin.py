@@ -89,6 +89,8 @@ DEFAULT_CONFIG = {
     },
 }
 
+OMRON_DEVICE_LIST_DAYS = 30
+
 
 class KeyringBackend(enum.StrEnum):
     SYSTEM = "system"
@@ -2348,15 +2350,40 @@ def omron_logout_cmd(ctx: click.Context, email: str, clear_config: bool, yes: bo
 
 
 @omron_group.command(name="list")
+@click.option(
+    "--days",
+    type=int,
+    default=OMRON_DEVICE_LIST_DAYS,
+    show_default=True,
+    help="Limit to devices active in last N days (API v1 only, ignored by API v2)",
+)
+@click.option(
+    "--all",
+    "fetch_all",
+    is_flag=True,
+    help="Fetch all historical devices (API v1: may be slow, API v2: same as default)",
+)
 @click.pass_context
-def omron_list_devices_cmd(ctx: click.Context) -> None:
+def omron_list_devices_cmd(ctx: click.Context, days: int, fetch_all: bool) -> None:
     """List all devices registered with OMRON Connect.
 
     Fetches and displays devices from OMRON Connect account,
     including their category, model name, MAC address, and user number.
+
+    \b
+    Notes:
+    - API v1 (Asia/Pacific): Supports pagination and date filtering
+    - API v2 (Europe/Americas): Returns all active devices (ignores --days)
+    - Use --all to fetch complete device history (API v1 only)
     """
 
     config_path = ctx.obj["config_path"]
+
+    # Determine days parameter
+    days_param = None if fetch_all else days
+
+    if fetch_all:
+        L.info("Fetching all historical devices (may take a while)...")
 
     try:
         # Login to OMRON
@@ -2366,7 +2393,7 @@ def omron_list_devices_cmd(ctx: click.Context) -> None:
             return
 
         # Fetch registered devices
-        devices = oc.get_registered_devices()
+        devices = oc.get_registered_devices(days=days_param)
 
         if not devices:
             L.info("No devices found in OMRON Connect")
@@ -2769,7 +2796,7 @@ def init_cmd(
                 try:
                     click.echo()
                     L.info("Fetching devices from OMRON Connect...")
-                    apiDevices = oc.get_registered_devices()
+                    apiDevices = oc.get_registered_devices(days=OMRON_DEVICE_LIST_DAYS)
 
                     if not apiDevices:
                         L.info("No devices found in your OMRON account")
