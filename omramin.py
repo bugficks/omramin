@@ -12,6 +12,7 @@
 #   "keyrings.alt>=5.0.0; sys_platform == 'win32'",
 #   "python-dateutil>=2.9.0.post0",
 #   "pytz>=2025.1",
+#   "click-pwsh>=0.9.5; sys_platform == 'win32'",
 # ]
 # ///
 ########################################################################################################################
@@ -44,6 +45,16 @@ from httpx import HTTPStatusError
 
 import omronconnect as OC
 import utils as U
+
+########################################################################################################################
+
+try:
+    from click_pwsh import support_pwsh_shell_completion  # type: ignore[import-untyped]
+
+    support_pwsh_shell_completion()
+
+except ImportError:
+    pass
 
 ########################################################################################################################
 

@@ -21,6 +21,7 @@ Sync **blood pressure** and **weight** measurements from **OMRON connect** to **
 ## Table of Contents
 
 - [Installation](#installation)
+- [Shell Completion](#shell-completion)
 - [Updating](#updating)
 - [Usage](#usage)
   - [Getting Started](#getting-started)
@@ -80,6 +81,53 @@ cd omramin
 python -m venv .venv
 source .venv/bin/activate      # On Windows: .venv\Scripts\activate
 pip install -Ue ".[bluetooth]"
+```
+
+---
+
+## Shell Completion
+
+Enable tab completion for command and option names:
+
+**Zsh:**
+
+```sh
+# Add to ~/.zshrc
+eval "$(_OMRAMIN_COMPLETE=zsh_source omramin)"
+```
+
+**Bash:**
+
+```sh
+# Add to ~/.bashrc
+eval "$(_OMRAMIN_COMPLETE=bash_source omramin)"
+```
+
+**Fish:**
+
+```sh
+# Add to ~/.config/fish/completions/omramin.fish
+_OMRAMIN_COMPLETE=fish_source omramin | source
+```
+
+**PowerShell 7+:**
+
+```powershell
+# Install completion (run once)
+python -m click_pwsh install omramin
+
+# Then restart PowerShell
+```
+
+To update completion after upgrading omramin:
+```powershell
+python -m click_pwsh update omramin
+```
+
+After adding the completion script, restart your shell or source the config file:
+
+```sh
+source ~/.zshrc   # or ~/.bashrc
 ```
 
 ---
