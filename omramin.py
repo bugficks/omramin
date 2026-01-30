@@ -2347,7 +2347,7 @@ def omron_logout_cmd(ctx: click.Context, email: str, clear_config: bool, yes: bo
             L.info("Tokens were cleared successfully")
 
 
-@omron_group.command(name="list-devices")
+@omron_group.command(name="list")
 @click.pass_context
 def omron_list_devices_cmd(ctx: click.Context) -> None:
     """List all devices registered with OMRON Connect.

@@ -29,5 +29,5 @@
 
 ### Device Management
 
-- **List OMRON devices**: New `omramin omron list-devices` command shows all devices in your account
+- **List OMRON devices**: New `omramin omron list` command shows all devices in your account
 - **Easier device discovery**: Multiple discovery methods (API, Bluetooth, manual MAC entry)

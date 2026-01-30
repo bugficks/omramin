@@ -205,7 +205,7 @@ omramin add --macaddr 00:11:22:33:44:55 --category scale --name "My Scale"
 Get MAC addresses from your OMRON account:
 
 ```sh
-omramin omron list-devices
+omramin omron list
 ```
 
 ---
@@ -257,7 +257,7 @@ OMRAMIN_GARMIN_DEBUG=1 omramin sync  # Garmin API only
 | `config` | Edit device settings                                              |
 | `remove` | Remove a device                                                   |
 | `garmin` | Garmin Connect authentication (login/logout)                      |
-| `omron`  | OMRON Connect operations (login/logout/list-devices/export)       |
+| `omron`  | OMRON Connect operations (login/logout/list/export)                |
 
 ### Common Usage
 
@@ -267,7 +267,7 @@ omramin garmin login
 omramin omron login
 
 # Device management
-omramin omron list-devices         # Show devices in OMRON account
+omramin omron list         # Show devices in OMRON account
 omramin add                        # Add device interactively
 omramin list                       # Show configured devices
 
