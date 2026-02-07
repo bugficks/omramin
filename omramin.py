@@ -1139,6 +1139,7 @@ def omron_sync_device_to_garmin(
     enddateStr = datetime.fromtimestamp(endLocal).date().isoformat()
 
     L.info(f"Start synchronizing device '{ocDev.name}' from {startdateStr} to {enddateStr}")
+    assert ocDev.category is not None, "Device category must be set for sync"
     L.debug(
         f"Device details: MAC={ocDev.macaddr}, Serial={ocDev.serial}, User={ocDev.user}, Category={ocDev.category.name}"
     )
@@ -1533,14 +1534,13 @@ def _get_platform_config_path() -> pathlib.Path:
 
         return pathlib.Path.home() / "AppData" / "Roaming" / CONFIG_DIR_NAME / CONFIG_FILENAME
 
-    elif system == "Darwin":
+    if system == "Darwin":
         return pathlib.Path.home() / "Library" / "Application Support" / CONFIG_DIR_NAME / CONFIG_FILENAME
 
-    else:
-        return _get_xdg_config_path()
+    return _get_xdg_config_path()
 
 
-def _get_default_config_path() -> pathlib.Path:
+def _get_default_config_path() -> pathlib.Path:  # pylint: disable=too-many-return-statements
     """Get default config path with precedence:
 
     1. OMRAMIN_CONFIG env var (if set)
@@ -2416,7 +2416,7 @@ def omron_list_devices_cmd(ctx: click.Context, days: int, fetch_all: bool) -> No
 
         for device in devices:
             click.echo(f"Device: {device.name}")
-            click.echo(f"  Category:    {device.category.name}")
+            click.echo(f"  Category:    {device.category.name if device.category else 'Unknown'}")
             click.echo(f"  MAC Address: {device.macaddr}")
             click.echo(f"  User Number: {device.user}")
             click.echo()
@@ -2593,6 +2593,7 @@ def export_csv(
         for ocDev, measurements in exportdata.values():
             for m in measurements:
                 dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
+                assert ocDev.category is not None, "Device category must be set for export"
                 row = {
                     "timestamp": dt.isoformat(),
                     "deviceName": ocDev.name,
@@ -2617,6 +2618,7 @@ def export_json(
     for ocDev, measurements in exportdata.values():
         for m in measurements:
             dt = datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone)
+            assert ocDev.category is not None, "Device category must be set for export"
             entry = {
                 "timestamp": dt.isoformat(),
                 "deviceName": ocDev.name,
@@ -2819,6 +2821,25 @@ def init_cmd(
                     else:
                         L.info(f"Found {len(apiDevices)} device(s) from API")
 
+                        # Prompt for unknown device categories
+                        for d in apiDevices:
+                            if not d.category:
+                                questions = [
+                                    inquirer.List(
+                                        "category",
+                                        message=f"Device '{d.name}' has unknown category. What type is it?",
+                                        choices=list(OC.DeviceCategory.__members__.keys()),
+                                    )
+                                ]
+                                answers = inquirer.prompt(questions)
+                                if not answers:
+                                    L.warning(f"Skipping device '{d.name}' - no category selected")
+
+                                else:
+                                    object.__setattr__(d, "category", OC.DeviceCategory[answers["category"]])
+                                    object.__setattr__(d, "enabled", True)
+                                    L.info(f"Set device '{d.name}' to category {answers['category']}")
+
                         existingDevices = config.get("omron", {}).get("devices", [])
                         existingMacs = {d["macaddr"] for d in existingDevices}
 
@@ -2847,9 +2868,9 @@ def init_cmd(
                             click.echo()
 
                             choices = []
-                            for i, d in enumerate(allDevices):
-                                isExisting = d["macaddr"] in existingMacs
-                                inApi = d["macaddr"] in apiMacs
+                            for i, device_dict in enumerate(allDevices):
+                                isExisting = device_dict["macaddr"] in existingMacs
+                                inApi = device_dict["macaddr"] in apiMacs
 
                                 prefix = "+ "
                                 if not inApi:
@@ -2858,7 +2879,7 @@ def init_cmd(
                                 elif isExisting:
                                     prefix = "= "
 
-                                label = f"{prefix}{d['name']} ({d['category']}) - {d['macaddr']}"
+                                label = f"{prefix}{device_dict['name']} ({device_dict['category']}) - {device_dict['macaddr']}"
                                 choices.append((label, i))
 
                                 # API devices checked, old config-only devices unchecked
