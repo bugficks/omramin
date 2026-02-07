@@ -36,6 +36,9 @@ _REDACTED_KEYS = {
     "token",
     "phoneidentifier",
     "userid_type_devicelocalname",
+    "macaddress",
+    "deviceserialid",
+    "devicelocalname_usernumberindevice",
 }
 
 _REDACTED_HEADERS = {
