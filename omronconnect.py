@@ -12,7 +12,7 @@ import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
-from typing import get_type_hints
+from functools import cache
 
 import httpx
 import pytz
@@ -201,7 +201,7 @@ class DeviceCategory(enum.StrEnum):
 
 
 def _coerce_dataclass_fields(self) -> None:
-    type_hints = get_type_hints(type(self))
+    type_hints = T.get_type_hints(type(self))
     for field in fields(self):
         attr = getattr(self, field.name)
         field_type = type_hints[field.name]
@@ -537,11 +537,14 @@ class OmronConnect1(OmronConnect):
         for device in devices.values():
             category = None
             try:
-                deviceCategory = device["deviceCategory"]
+                deviceCategory = device.get("deviceCategory")
+                if deviceCategory is None or deviceCategory == "":
+                    deviceCategory = omron_name_to_device_category(device.get("deviceModel"), country=self._country)
+
                 category = DeviceCategory(str(deviceCategory))
 
             except (ValueError, KeyError):
-                L.warning(f"Device with unknown category: {device.get('name', 'unknown')}")
+                L.warning(f"Device with unknown category: {device.get('deviceModel', 'unknown')}")
 
             ocDev = OmronDevice(
                 category=category,
@@ -821,7 +824,10 @@ class OmronConnect2(OmronConnect):
 
             category = None
             try:
-                deviceCategory = attrs["deviceCategory"]
+                deviceCategory = attrs.get("deviceCategory")
+                if deviceCategory is None or deviceCategory == "":
+                    deviceCategory = omron_name_to_device_category(attrs.get("name"), country=self._country)
+
                 category = DeviceCategory(str(deviceCategory))
 
             except (ValueError, KeyError):
@@ -1055,3 +1061,91 @@ class OmronClient:
 
 
 ########################################################################################################################
+
+
+@cache
+def omron_name_to_device_category(
+    devname: str,
+    *,
+    country: str,
+    scale_keywords: T.Optional[list[str]] = None,
+    bpm_keywords: T.Optional[list[str]] = None,
+    user_agent: T.Optional[str] = None,
+) -> T.Optional[DeviceCategory]:
+    try:
+        from selectolax.parser import HTMLParser
+
+    except ImportError:
+        return None
+
+    if not devname:
+        return None
+
+    SEARCH_URL = "https://html.duckduckgo.com/html/"
+    USER_AGENT = user_agent or (
+        "Mozilla/5.0 (Linux; Android 10; K) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.7559.133 Mobile Safari/537.36"
+    )
+
+    # hard facts: keywords seen across Omron product pages
+    DEVICE_KEYWORDS = {
+        "scale": scale_keywords
+        or [
+            "scale",
+            "body composition",
+            "body fat",
+            "weight scale",
+            "smart scale",
+        ],
+        "bpm": bpm_keywords
+        or [
+            "blood pressure",
+            "blood-pressure",
+            "bpm",
+            "sphygmomanometer",
+            "arm cuff",
+            "wrist cuff",
+        ],
+    }
+
+    def infer_device_type(text: str) -> str:
+        text = text.lower()
+        for dev_type, kwds in DEVICE_KEYWORDS.items():
+            for kw in kwds:
+                if kw in text:
+                    return dev_type.upper()
+
+        return ""
+
+    def query_ddg() -> str:
+        params = {
+            "q": f"omron+{devname}",
+            "kl": f"{country.lower()}-en",  # "wt-wt"
+        }
+
+        headers = {
+            "User-Agent": USER_AGENT
+            or "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.7559.133 Mobile Safari/537.36",
+        }
+
+        with httpx.Client(timeout=10.0, headers=headers) as client:
+            r = client.post(SEARCH_URL, data=params)
+            r.raise_for_status()
+
+        tree = HTMLParser(r.text)
+
+        # titles + snippets
+        texts = [node.text(strip=True) for node in tree.css("a.result__a, a.result__snippet")]
+
+        combined = " ".join(t.strip() for t in texts if t.strip())
+        return infer_device_type(combined)
+
+    try:
+        category_name = query_ddg()
+        if category_name:
+            return DeviceCategory[category_name]  # Lookup by name, not value
+
+        return None
+
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None

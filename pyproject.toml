@@ -19,6 +19,7 @@ dependencies = [
   "python-dateutil>=2.9.0.post0",
   "pytz>=2025.1",
   "click-pwsh>=0.9.5; sys_platform == 'win32'",
+  "selectolax>=0.4.6",
 ]
 description = "Sync blood pressure and weight measurements from OMRON connect to Garmin Connect"
 dynamic = ["version"]
