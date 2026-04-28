@@ -20,20 +20,25 @@ Sync **blood pressure** and **weight** measurements from **OMRON connect** to **
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Shell Completion](#shell-completion)
-- [Updating](#updating)
-- [Usage](#usage)
-  - [Getting Started](#getting-started)
-  - [Configuration](#configuration)
-  - [Adding a Device](#adding-a-device)
-  - [Synchronizing to Garmin Connect](#synchronizing-to-garmin-connect)
-  - [Debugging](#debugging)
-- [Commands](#commands)
-- [Changelog](CHANGELOG.md)
-- [Related Projects](#related-projects)
-- [Contributing](#contributing)
-- [License](#license)
+- [omramin](#omramin)
+  - [Features](#features)
+  - [Table of Contents](#table-of-contents)
+  - [Installation](#installation)
+    - [Optional: Bluetooth Device Discovery](#optional-bluetooth-device-discovery)
+    - [For Developers](#for-developers)
+  - [Shell Completion](#shell-completion)
+  - [Updating](#updating)
+  - [Usage](#usage)
+    - [Getting Started](#getting-started)
+    - [Configuration](#configuration)
+    - [Adding a Device](#adding-a-device)
+    - [Synchronizing to Garmin Connect](#synchronizing-to-garmin-connect)
+    - [Debugging](#debugging)
+  - [Commands](#commands)
+    - [Common Usage](#common-usage)
+  - [Related Projects](#related-projects)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 ---
 
@@ -264,6 +269,7 @@ omramin omron list
 omramin sync           # Sync today only (default)
 omramin sync --days 7  # Sync last 7 days
 omramin sync --from 2024-01-01 --to 2024-01-31  # Date range
+omramin sync --csv-file "omron-export.csv"  # Sync BP/Pulse from OMRON Connect CSV export
 ```
 
 Sync specific devices:
@@ -322,6 +328,7 @@ omramin list                       # Show configured devices
 # Sync
 omramin sync                       # Sync all devices (today only)
 omramin sync --days 7              # Sync last 7 days
+omramin sync --csv-file "omron-export.csv"  # Sync BP/Pulse from OMRON Connect CSV export
 ```
 
 **Help:**
