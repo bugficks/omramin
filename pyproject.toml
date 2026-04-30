@@ -8,6 +8,7 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1.7",
+  "dateparser>=1.2.0",
   "garminconnect>=0.3.0",
   "httpx[http2,cli,brotli]>=0.28.1",
   "inquirer>=3.4.0",
@@ -144,6 +145,7 @@ module = [
   "python-dateutil",
   "dateutil",
   "dateutil.parser",
+  "dateparser",
   "keyrings.alt.file",
   "keyrings.cryptfile.cryptfile",
 ]

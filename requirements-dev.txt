@@ -1,5 +1,6 @@
 garminconnect
 click
+dateparser
 brotlicffi
 httpx[http2,cli,brotli]
 python-dateutil

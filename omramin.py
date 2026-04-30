@@ -3,6 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "click>=8.1.7",
+#   "dateparser>=1.2.0",
 #   "garminconnect>=0.3.0",
 #   "httpx[http2,cli,brotli]>=0.28.1",
 #   "inquirer>=3.4.0",
@@ -38,10 +39,12 @@ from datetime import datetime, timedelta
 from functools import cache, wraps
 
 import click
+import dateparser
 import garminconnect as GC
 import inquirer
 import keyring
 from dateutil import parser as dateutil_parser
+from dateutil import tz
 from httpx import HTTPStatusError
 
 import omronconnect as OC
@@ -1353,43 +1356,6 @@ def garmin_get_weighins(gc: GC.Garmin, startdate: str, enddate: str) -> T.Dict[s
 
 
 ########################################################################################################################
-_OMRON_CONNECT_MONTH_MAP = {
-    "jan": 1,
-    "januari": 1,
-    "january": 1,
-    "feb": 2,
-    "februari": 2,
-    "february": 2,
-    "mar": 3,
-    "mars": 3,
-    "march": 3,
-    "apr": 4,
-    "april": 4,
-    "maj": 5,
-    "may": 5,
-    "jun": 6,
-    "juni": 6,
-    "june": 6,
-    "jul": 7,
-    "juli": 7,
-    "july": 7,
-    "aug": 8,
-    "augusti": 8,
-    "august": 8,
-    "sep": 9,
-    "sept": 9,
-    "september": 9,
-    "okt": 10,
-    "oct": 10,
-    "oktober": 10,
-    "october": 10,
-    "nov": 11,
-    "november": 11,
-    "dec": 12,
-    "december": 12,
-}
-
-
 def _normalize_csv_header(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     normalized = normalized.lower()
@@ -1414,30 +1380,31 @@ def _find_csv_column(fieldnames: T.Sequence[str], terms: T.List[str], required: 
 
 
 def _parse_omron_connect_date(date_str: str):
-    # Try parser first (works for many locales), then fall back to month-name mapping.
-    try:
-        return dateutil_parser.parse(date_str, dayfirst=True).date()
-
-    except (ValueError, TypeError, dateutil_parser.ParserError):
-        pass
-
-    match = re.match(r"^\s*(\d{1,2})\s+([^\s]+)\s+(\d{4})\s*$", date_str, re.IGNORECASE)
-    if not match:
+    parsed = dateparser.parse(
+        date_str,
+        settings={
+            "DATE_ORDER": "DMY",
+            "STRICT_PARSING": True,
+        },
+    )
+    if parsed is None:
         raise ValueError(f"Unsupported date format: '{date_str}'")
 
-    day = int(match.group(1))
-    month_token = match.group(2).rstrip(".")
-    month_token = unicodedata.normalize("NFKD", month_token).encode("ascii", "ignore").decode("ascii").lower()
-    year = int(match.group(3))
-
-    month = _OMRON_CONNECT_MONTH_MAP.get(month_token)
-    if month is None:
-        raise ValueError(f"Unsupported month name '{match.group(2)}' in date '{date_str}'")
-
-    return datetime(year, month, day).date()
+    return parsed.date()
 
 
-def _parse_omron_connect_datetime(date_str: str, time_str: str, local_tz: T.Any) -> datetime:
+def _parse_omron_connect_timezone(timezone_str: T.Optional[str], fallback_tz: T.Any) -> T.Any:
+    if timezone_str is None or not timezone_str.strip():
+        return fallback_tz
+
+    parsed_tz = tz.gettz(timezone_str.strip())
+    if parsed_tz is None:
+        raise ValueError(f"Unsupported time zone: '{timezone_str}'")
+
+    return parsed_tz
+
+
+def _parse_omron_connect_datetime(date_str: str, time_str: str, measurement_tz: T.Any) -> datetime:
     date_value = _parse_omron_connect_date(date_str)
     time_value = None
 
@@ -1456,14 +1423,31 @@ def _parse_omron_connect_datetime(date_str: str, time_str: str, local_tz: T.Any)
         except (ValueError, TypeError, dateutil_parser.ParserError) as e:
             raise ValueError(f"Unsupported time format: '{time_str}'") from e
 
-    return datetime.combine(date_value, time_value).replace(tzinfo=local_tz)
+    return datetime.combine(date_value, time_value).replace(tzinfo=measurement_tz)
+
+
+def _parse_omron_connect_measurement_datetime(datetime_str: str, measurement_tz: T.Any) -> datetime:
+    parsed = dateparser.parse(
+        datetime_str,
+        settings={
+            "DATE_ORDER": "DMY",
+            "STRICT_PARSING": True,
+        },
+    )
+    if parsed is None:
+        raise ValueError(f"Unsupported datetime format: '{datetime_str}'")
+
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(measurement_tz)
+
+    return parsed.replace(tzinfo=measurement_tz)
 
 
 def load_omron_connect_bp_csv(csv_path: str) -> T.List[OC.BPMeasurement]:
     """Load blood pressure measurements exported from OMRON Connect CSV."""
 
-    local_tz = datetime.now().astimezone().tzinfo
-    if local_tz is None:
+    fallback_tz = datetime.now().astimezone().tzinfo
+    if fallback_tz is None:
         raise ValueError("Unable to determine local timezone for CSV import")
 
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
@@ -1480,16 +1464,28 @@ def load_omron_connect_bp_csv(csv_path: str) -> T.List[OC.BPMeasurement]:
         if not reader.fieldnames:
             raise ValueError("CSV file has no header row")
 
+        datetime_col = _find_csv_column(reader.fieldnames, ["measurement", "date"], required=False)
+
         date_col = _find_csv_column(reader.fieldnames, ["date"], required=False)
         if date_col is None:
             date_col = _find_csv_column(reader.fieldnames, ["datum"])
 
-        time_col = _find_csv_column(reader.fieldnames, ["time"], required=False)
-        if time_col is None:
-            time_col = _find_csv_column(reader.fieldnames, ["tid"])
+        time_col = None
+        if datetime_col is None:
+            time_col = _find_csv_column(reader.fieldnames, ["time"], required=False)
+            if time_col is None:
+                time_col = _find_csv_column(reader.fieldnames, ["tid"])
 
-        systolic_col = _find_csv_column(reader.fieldnames, ["systol"])
-        diastolic_col = _find_csv_column(reader.fieldnames, ["diastol"])
+        timezone_col = _find_csv_column(reader.fieldnames, ["time", "zone"], required=False)
+
+        systolic_col = _find_csv_column(reader.fieldnames, ["systol"], required=False)
+        if systolic_col is None:
+            systolic_col = _find_csv_column(reader.fieldnames, ["sys"])
+
+        diastolic_col = _find_csv_column(reader.fieldnames, ["diastol"], required=False)
+        if diastolic_col is None:
+            diastolic_col = _find_csv_column(reader.fieldnames, ["dia"])
+
         pulse_col = _find_csv_column(reader.fieldnames, ["puls"], required=False)
         if pulse_col is None:
             pulse_col = _find_csv_column(reader.fieldnames, ["pulse"])
@@ -1504,7 +1500,13 @@ def load_omron_connect_bp_csv(csv_path: str) -> T.List[OC.BPMeasurement]:
                 continue
 
             try:
-                measurement_dt = _parse_omron_connect_datetime(row[date_col], row[time_col], local_tz)
+                measurement_tz = _parse_omron_connect_timezone(row.get(timezone_col), fallback_tz)
+                if datetime_col is not None:
+                    measurement_dt = _parse_omron_connect_measurement_datetime(row[datetime_col], measurement_tz)
+
+                else:
+                    measurement_dt = _parse_omron_connect_datetime(row[date_col], row[time_col], measurement_tz)
+
                 systolic = int(str(row[systolic_col]).strip())
                 diastolic = int(str(row[diastolic_col]).strip())
                 pulse = int(str(row[pulse_col]).strip())
@@ -1521,7 +1523,7 @@ def load_omron_connect_bp_csv(csv_path: str) -> T.List[OC.BPMeasurement]:
                     diastolic=diastolic,
                     pulse=pulse,
                     measurementDate=int(measurement_dt.timestamp() * 1000),
-                    timeZone=local_tz,
+                    timeZone=measurement_tz,
                     notes=notes,
                 )
             )

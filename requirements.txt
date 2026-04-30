@@ -1,5 +1,6 @@
 bleak==2.0.0
 click==8.3.1
+dateparser==1.2.2
 garminconnect==0.2.34
 httpx[http2,cli,brotli]==0.28.1
 inquirer==3.4.1
