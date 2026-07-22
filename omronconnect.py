@@ -319,6 +319,11 @@ class OmronDevice:
     category: T.Optional[DeviceCategory] = None
     user: int = 1
     enabled: bool = True
+    # Kii's deviceSerialID is 8 bytes; the BLE MAC we store/display is only 6,
+    # so macaddr<->serial is a lossy round-trip (see serial_to_mac/ble_mac_to_serial).
+    # When the server hands us the real serial directly (get_registered_devices),
+    # we keep it here so `serial` doesn't have to reconstruct a wrong value.
+    real_serial: T.Optional[str] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.category, DeviceCategory):
@@ -335,7 +340,7 @@ class OmronDevice:
 
     @property
     def serial(self) -> str:
-        return ble_mac_to_serial(self.macaddr)
+        return self.real_serial or ble_mac_to_serial(self.macaddr)
 
     def to_dict(self) -> dict:
         result = asdict(self)
@@ -566,6 +571,7 @@ class OmronConnect1(OmronConnect):
                 name=f"{device['deviceModel']}:{device['userNumberInDevice']}",
                 macaddr=serial_to_mac(device["deviceSerialID"]),
                 user=int(device["userNumberInDevice"]),
+                real_serial=device["deviceSerialID"],
             )
             result.append(ocDev)
 
@@ -579,11 +585,15 @@ class OmronConnect1(OmronConnect):
             "containCorrectedDataFlag": 1,
             "containAllDataTypeFlag": 1,
             "deviceCategory": device.category,
+            # Required by the backend for it to actually return measureList data —
+            # omitting it yields a 200 OK with deviceModelList: null every time,
+            # even for a valid device/date range. `name` is always stored as
+            # "<deviceModel>:<userNumberInDevice>" (see get_registered_devices).
+            "deviceModel": device.name.rsplit(":", 1)[0],
             "deviceSerialID": device.serial,
             "userNumberInDevice": int(device.user),
             "searchDateFrom": searchDateFrom if searchDateFrom >= 0 else 0,
             "searchDateTo": int(U.utcnow().timestamp() * 1000) if searchDateTo <= 0 else searchDateTo,
-            # "deviceModel": "OGSC", "HBF-xxx", ...
         }
 
         r = self._client.post(
