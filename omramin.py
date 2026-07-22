@@ -291,6 +291,9 @@ def garmin_login(config_path: str) -> T.Optional[GC.Garmin]:
         L.debug(f"Attempting Garmin login using cached tokens for {email}")
         gc.login(tokenstore=tokendata)
         L.debug(f"Garmin login successful using cached tokens for {email}")
+        
+        # Save tokens back to keyring in case they were proactively refreshed during login
+        save_service_tokens(config_path, "garmin", email, gc.client.dumps())
 
     except (FileNotFoundError, binascii.Error, KeyError, GC.GarminConnectAuthenticationError):
         # Precedence: env > config > prompt
