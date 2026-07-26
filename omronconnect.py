@@ -278,6 +278,21 @@ def serial_to_mac(serial: str) -> str:
     return ":".join(values[5:2:-1] + values[2::-1])
 
 
+def ble_local_name_to_mac(local_name: str) -> str:
+    # e.g. blesmart_0001020828ffb210aaa4 to 28:FF:B2:10:AA:A4
+    # OMRON encodes the MAC as the last 12 hex chars of the BLE local name.
+    # Mirrors the BLE-scan derivation in omramin.omron_ble_scan.
+    name = (local_name or "").strip()
+    # Only OMRON BLE local names carry the MAC this way; guard against deriving a
+    # bogus MAC from an unrelated name that happens to end in 12 hex chars.
+    if not name.upper().startswith("BLESMART_"):
+        return ""
+    mac_hex = name[-12:].upper()
+    if len(mac_hex) != 12 or not all(c in "0123456789ABCDEF" for c in mac_hex):
+        return ""
+    return ":".join(mac_hex[i : i + 2] for i in range(0, 12, 2))
+
+
 def convert_weight_to_kg(weight: T.Union[int, float], unit: int) -> float:
     if unit == WeightUnit.G:
         return weight / 1000
@@ -834,8 +849,19 @@ class OmronConnect2(OmronConnect):
 
             macAddress = attrs.get("macAddress", "").strip()
             if not macAddress:
+                # EU/NA v2 responses omit macAddress; OMRON encodes the MAC in the
+                # BLE local name (blesmart_<...>) and falls back to deviceSerialID.
+                macAddress = ble_local_name_to_mac(attrs.get("deviceLocalName", ""))
+            if not macAddress:
+                serial = attrs.get("deviceSerialID", "")
+                if serial:
+                    macAddress = serial_to_mac(serial)
+            if not macAddress:
                 L.debug(f"Skipping device without MAC address: {attrs.get('name', 'unknown')}")
                 continue
+            # Normalize case so every discovery path (API macAddress, BLE local
+            # name, serial fallback) yields the same string for a given device.
+            macAddress = macAddress.upper()
 
             category = None
             deviceCategory = attrs.get("deviceCategory")
@@ -855,7 +881,7 @@ class OmronConnect2(OmronConnect):
                     continue
 
             else:
-                L.warning(f"Device with unknown category {device.get('deviceModel')}")
+                L.warning(f"Device with unknown category {deviceModel}")
 
             # Create OmronDevice
             deviceModel = attrs.get("deviceModel", attrs.get("identifier", "Unknown"))

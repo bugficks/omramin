@@ -294,6 +294,23 @@ OMRAMIN_GARMIN_DEBUG=1 omramin sync  # Garmin API only
 
 ---
 
+### Troubleshooting
+
+**`omron list` shows no devices, but the device is in the OMRON app**
+
+- **Region mismatch**: the device only appears on the OMRON regional server your
+  country code maps to. Make sure the country you logged in with matches your
+  OMRON account's region. Some countries (e.g. `TR`) map to an offline region
+  with no cloud API.
+- **Not synced to the cloud yet**: open the OMRON Connect phone app so it uploads
+  the latest measurements — `omramin` reads what's on OMRON's servers, not what is
+  only on the device over Bluetooth.
+- **Inspect the raw response**: `omramin --debug omron list` logs the full
+  `init-user` response (credentials redacted) so you can see the returned
+  `deviceList`.
+
+---
+
 ## Commands
 
 | Command  | Description                                                       |
