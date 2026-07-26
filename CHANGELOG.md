@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **EU/NA device discovery**: `omron list` and setup device discovery no longer
+  return an empty list on the EU/NA v2 API. That API omits the `macAddress`
+  field, so every device was dropped by the "skip device without MAC address"
+  guard. The MAC is now derived from the BLE local name (e.g.
+  `blesmart_…` → `28:FF:B2:10:AA:A4`), then from `deviceSerialID`, matching the
+  value produced by Bluetooth discovery and manual `add --macaddr`.
+
 ## v0.3.0
 
 - **Garmin auth rewritten**: Migrated to garminconnect>=0.3.0 due to Garmin SSO/OAuth changes; replaces garth-based authentication. Re-login required.
