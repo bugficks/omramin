@@ -275,7 +275,7 @@ def ble_mac_to_serial(mac: str) -> str:
 def serial_to_mac(serial: str) -> str:
     # e.g. 665544feff332211 to 11:22:33:44:55:66
     values = [serial[i : i + 2] for i in range(0, len(serial), 2)]  # noqa: F203
-    return ":".join(values[5:2:-1] + values[2::-1])
+    return ":".join(values[7:4:-1] + values[2::-1])
 
 
 def convert_weight_to_kg(weight: T.Union[int, float], unit: int) -> float:
