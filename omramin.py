@@ -1201,7 +1201,8 @@ def sync_measurements(
     for measurement in measurements:
         # Common timestamp handling
         tz = measurement.timeZone
-        ts = measurement.measurementDate / 1000
+        # whole seconds: Garmin Connect drops the milliseconds that OMRON keeps on entries made in its app
+        ts = measurement.measurementDate // 1000
         dtUTC = U.utcfromtimestamp(ts)
         dtLocal = datetime.fromtimestamp(ts, tz=tz)
 
