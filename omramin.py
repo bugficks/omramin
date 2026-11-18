@@ -68,6 +68,7 @@ class Options:
 
     write_to_garmin: bool = True
     overwrite: bool = False
+    include_manual: bool = False
     ble_filter: str = "BLEsmart_"
 
 
@@ -1141,7 +1142,12 @@ def omron_sync_device_to_garmin(
         f"Device details: MAC={ocDev.macaddr}, Serial={ocDev.serial}, User={ocDev.user}, Category={ocDev.category.name}"
     )
 
-    measurements = oc.get_measurements(ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000))
+    measurements = oc.get_measurements(
+        ocDev,
+        searchDateFrom=int(startLocal * 1000),
+        searchDateTo=int(endLocal * 1000),
+        includeManual=opts.include_manual,
+    )
     if not measurements:
         L.info("No new measurements")
         return
@@ -1151,16 +1157,23 @@ def omron_sync_device_to_garmin(
     last_ts = datetime.fromtimestamp(measurements[-1].measurementDate / 1000).isoformat()
     L.debug(f"Measurement date range: {first_ts} to {last_ts}")
 
-    # get measurements from Garmin Connect for the same date range
+    # get existing measurements from Garmin Connect for every day the OMRON entries fall on.
+    # OMRON returns entries *modified* since the start date, so a late upload can be older than
+    # the requested range, and each entry is dated in its own timezone, which can be a day off
+    # this host's. Checking only the requested range re-adds such entries on every run.
+    localDates = [datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone).date() for m in measurements]
+    gcStartStr = (min(localDates + [datetime.fromtimestamp(startLocal).date()]) - timedelta(days=1)).isoformat()
+    gcEndStr = (max(localDates + [datetime.fromtimestamp(endLocal).date()]) + timedelta(days=1)).isoformat()
+
     category = "weigh-ins" if ocDev.category == OC.DeviceCategory.SCALE else "blood pressure"
-    L.debug(f"Fetching existing Garmin {category} for date range {startdateStr} to {enddateStr}")
+    L.debug(f"Fetching existing Garmin {category} for date range {gcStartStr} to {gcEndStr}")
 
     if ocDev.category == OC.DeviceCategory.SCALE:
-        gcData = garmin_get_weighins(gc, startdateStr, enddateStr)
+        gcData = garmin_get_weighins(gc, gcStartStr, gcEndStr)
         sync_scale_measurements(gc, gcData, measurements, opts)
 
     elif ocDev.category == OC.DeviceCategory.BPM:
-        gcData = garmin_get_bp_measurements(gc, startdateStr, enddateStr)
+        gcData = garmin_get_bp_measurements(gc, gcStartStr, gcEndStr)
         sync_bp_measurements(gc, gcData, measurements, opts)
 
 
@@ -1188,7 +1201,8 @@ def sync_measurements(
     for measurement in measurements:
         # Common timestamp handling
         tz = measurement.timeZone
-        ts = measurement.measurementDate / 1000
+        # whole seconds: Garmin Connect drops the milliseconds that OMRON keeps on entries made in its app
+        ts = measurement.measurementDate // 1000
         dtUTC = U.utcfromtimestamp(ts)
         dtLocal = datetime.fromtimestamp(ts, tz=tz)
 
@@ -1217,7 +1231,7 @@ def sync_measurements(
         handler.add_measurement(dtLocal, measurement, opts)  # type: ignore[arg-type]
         added += 1
 
-    L.debug(f"Sync complete: {added} added, {skipped} skipped")
+    L.info(f"Sync complete: {added} {handler.log_name} added, {skipped} already in Garmin Connect")
 
 
 def _add_scale_measurement(gc: GC.Garmin, dtLocal: datetime, wm: OC.WeightMeasurement, opts: Options) -> None:
@@ -1912,6 +1926,13 @@ def remove_device(ctx: click.Context, devname: str):
     show_default=True,
     help="Do not write to Garmin Connect.",
 )
+@click.option(
+    "--include-manual",
+    is_flag=True,
+    default=Options().include_manual,
+    show_default=True,
+    help="Also sync readings entered by hand in the OMRON app.",
+)
 @click.pass_context
 @requires_config
 def sync_device(
@@ -1923,6 +1944,7 @@ def sync_device(
     to_date: T.Optional[str],
     overwrite: bool,
     no_write: bool,
+    include_manual: bool,
 ):
     """Sync DEVNAMES... to Garmin Connect.
 
@@ -1967,6 +1989,7 @@ def sync_device(
     opts = Options()
     opts.overwrite = overwrite
     opts.write_to_garmin = not no_write
+    opts.include_manual = include_manual
 
     try:
         config = U.json_load(config_path)
