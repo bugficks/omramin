@@ -383,7 +383,7 @@ class OmronConnect(ABC):
 
     @abstractmethod
     def get_measurements(
-        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
+        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0, includeManual: bool = False
     ) -> T.List[MeasurementTypes]:
         raise NotImplementedError
 
@@ -573,7 +573,7 @@ class OmronConnect1(OmronConnect):
 
     # utc timestamps
     def get_measurements(
-        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
+        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0, includeManual: bool = False
     ) -> T.List[MeasurementTypes]:
         data = {
             "containCorrectedDataFlag": 1,
@@ -908,7 +908,7 @@ class OmronConnect2(OmronConnect):
         return resp["data"]
 
     def get_measurements(
-        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
+        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0, includeManual: bool = False
     ) -> T.List[MeasurementTypes]:
         user = int(device.user)
 
@@ -916,8 +916,15 @@ class OmronConnect2(OmronConnect):
             r: T.List[MeasurementTypes] = []
             ignored = 0
             for m in data:
+                isManualEntry = int(m["isManualEntry"]) != 0
+                if isManualEntry and not includeManual:
+                    L.debug("skipping manual entry")
+                    ignored += 1
+                    continue
+
+                # entries typed into the app aren't from a cuff user slot (userNumberInDevice is 0)
                 userNumberInDevice = int(m["userNumberInDevice"])
-                if user >= 0 and userNumberInDevice != user:
+                if not isManualEntry and user >= 0 and userNumberInDevice != user:
                     L.debug(f"skipping user: {user} != {userNumberInDevice}")
                     ignored += 1
                     continue
@@ -925,11 +932,6 @@ class OmronConnect2(OmronConnect):
                 measurementDate = int(m["measurementDate"])
                 if 0 < searchDateTo < measurementDate:
                     L.debug(f"skipping date: {measurementDate} > {searchDateTo}")
-                    continue
-
-                if int(m["isManualEntry"]):
-                    L.debug("skipping manual entry")
-                    ignored += 1
                     continue
 
                 if device.category == DeviceCategory.BPM:
@@ -1063,14 +1065,14 @@ class OmronClient:
         return new_token
 
     def get_measurements(
-        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0
+        self, device: OmronDevice, searchDateFrom: int = 0, searchDateTo: int = 0, includeManual: bool = False
     ) -> T.List[MeasurementTypes]:
         """Delegate to active client."""
 
         if not self._active_client:
             raise RuntimeError("Not connected - call login() or refresh_oauth2() first")
 
-        return self._active_client.get_measurements(device, searchDateFrom, searchDateTo)
+        return self._active_client.get_measurements(device, searchDateFrom, searchDateTo, includeManual)
 
     def get_user(self) -> T.Dict[str, T.Any]:
         """Delegate to active client."""

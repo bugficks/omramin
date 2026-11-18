@@ -68,6 +68,7 @@ class Options:
 
     write_to_garmin: bool = True
     overwrite: bool = False
+    include_manual: bool = False
     ble_filter: str = "BLEsmart_"
 
 
@@ -1141,7 +1142,12 @@ def omron_sync_device_to_garmin(
         f"Device details: MAC={ocDev.macaddr}, Serial={ocDev.serial}, User={ocDev.user}, Category={ocDev.category.name}"
     )
 
-    measurements = oc.get_measurements(ocDev, searchDateFrom=int(startLocal * 1000), searchDateTo=int(endLocal * 1000))
+    measurements = oc.get_measurements(
+        ocDev,
+        searchDateFrom=int(startLocal * 1000),
+        searchDateTo=int(endLocal * 1000),
+        includeManual=opts.include_manual,
+    )
     if not measurements:
         L.info("No new measurements")
         return
@@ -1919,6 +1925,13 @@ def remove_device(ctx: click.Context, devname: str):
     show_default=True,
     help="Do not write to Garmin Connect.",
 )
+@click.option(
+    "--include-manual",
+    is_flag=True,
+    default=Options().include_manual,
+    show_default=True,
+    help="Also sync readings entered by hand in the OMRON app.",
+)
 @click.pass_context
 @requires_config
 def sync_device(
@@ -1930,6 +1943,7 @@ def sync_device(
     to_date: T.Optional[str],
     overwrite: bool,
     no_write: bool,
+    include_manual: bool,
 ):
     """Sync DEVNAMES... to Garmin Connect.
 
@@ -1974,6 +1988,7 @@ def sync_device(
     opts = Options()
     opts.overwrite = overwrite
     opts.write_to_garmin = not no_write
+    opts.include_manual = include_manual
 
     try:
         config = U.json_load(config_path)
