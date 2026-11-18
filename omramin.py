@@ -1151,16 +1151,23 @@ def omron_sync_device_to_garmin(
     last_ts = datetime.fromtimestamp(measurements[-1].measurementDate / 1000).isoformat()
     L.debug(f"Measurement date range: {first_ts} to {last_ts}")
 
-    # get measurements from Garmin Connect for the same date range
+    # get existing measurements from Garmin Connect for every day the OMRON entries fall on.
+    # OMRON returns entries *modified* since the start date, so a late upload can be older than
+    # the requested range, and each entry is dated in its own timezone, which can be a day off
+    # this host's. Checking only the requested range re-adds such entries on every run.
+    localDates = [datetime.fromtimestamp(m.measurementDate / 1000, tz=m.timeZone).date() for m in measurements]
+    gcStartStr = (min(localDates + [datetime.fromtimestamp(startLocal).date()]) - timedelta(days=1)).isoformat()
+    gcEndStr = (max(localDates + [datetime.fromtimestamp(endLocal).date()]) + timedelta(days=1)).isoformat()
+
     category = "weigh-ins" if ocDev.category == OC.DeviceCategory.SCALE else "blood pressure"
-    L.debug(f"Fetching existing Garmin {category} for date range {startdateStr} to {enddateStr}")
+    L.debug(f"Fetching existing Garmin {category} for date range {gcStartStr} to {gcEndStr}")
 
     if ocDev.category == OC.DeviceCategory.SCALE:
-        gcData = garmin_get_weighins(gc, startdateStr, enddateStr)
+        gcData = garmin_get_weighins(gc, gcStartStr, gcEndStr)
         sync_scale_measurements(gc, gcData, measurements, opts)
 
     elif ocDev.category == OC.DeviceCategory.BPM:
-        gcData = garmin_get_bp_measurements(gc, startdateStr, enddateStr)
+        gcData = garmin_get_bp_measurements(gc, gcStartStr, gcEndStr)
         sync_bp_measurements(gc, gcData, measurements, opts)
 
 
