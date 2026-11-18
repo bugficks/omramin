@@ -914,10 +914,12 @@ class OmronConnect2(OmronConnect):
 
         def filter_measurements(data: T.List[T.Dict[str, T.Any]]) -> T.List[MeasurementTypes]:
             r: T.List[MeasurementTypes] = []
+            ignored = 0
             for m in data:
                 userNumberInDevice = int(m["userNumberInDevice"])
                 if user >= 0 and userNumberInDevice != user:
                     L.debug(f"skipping user: {user} != {userNumberInDevice}")
+                    ignored += 1
                     continue
 
                 measurementDate = int(m["measurementDate"])
@@ -927,6 +929,7 @@ class OmronConnect2(OmronConnect):
 
                 if int(m["isManualEntry"]):
                     L.debug("skipping manual entry")
+                    ignored += 1
                     continue
 
                 if device.category == DeviceCategory.BPM:
@@ -965,6 +968,8 @@ class OmronConnect2(OmronConnect):
                     )
                     r.append(wm)
 
+            if ignored:
+                L.info(f"Ignored {ignored} OMRON entr{'y' if ignored == 1 else 'ies'}: another cuff user or entered by hand")
             return r
 
         data = None
